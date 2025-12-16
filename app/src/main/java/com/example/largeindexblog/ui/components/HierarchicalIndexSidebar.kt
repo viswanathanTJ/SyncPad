@@ -172,20 +172,22 @@ private fun DrillDownPopup(
         isLoading = false
     }
     
-    // Generate display items from actual counts
+    // Generate display items from actual counts - ONLY show items with count > 0
     val displayItems = remember(childCounts, parentPrefix) {
-        ('A'..'Z').map { char ->
+        ('A'..'Z').mapNotNull { char ->
             val nextPrefix = parentPrefix + char
             val count = childCounts[nextPrefix] ?: 0
-            DisplayItem(
-                prefix = nextPrefix,
-                count = count,
-                hasChildren = canDrillDeeper && count > 0
-            )
+            if (count > 0) {
+                DisplayItem(
+                    prefix = nextPrefix,
+                    count = count,
+                    hasChildren = canDrillDeeper && count > 0
+                )
+            } else null
         }
     }
     
-    val totalWithItems = displayItems.count { it.count > 0 }
+    val totalWithItems = displayItems.size
 
     Dialog(onDismissRequest = onDismiss) {
         Card(

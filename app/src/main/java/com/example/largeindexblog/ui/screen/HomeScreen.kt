@@ -635,15 +635,18 @@ private fun DrillDownPopupFromHeader(
     }
     
     val currentDepth = currentPrefix.length + 1
+    // Only show items with count > 0
     val displayItems = remember(childCounts, currentPrefix) {
-        ('A'..'Z').map { char ->
+        ('A'..'Z').mapNotNull { char ->
             val nextPrefix = currentPrefix + char
             val count = childCounts[nextPrefix] ?: 0
-            Triple(nextPrefix, count, count > 0 && currentDepth < maxDepth)
+            if (count > 0) {
+                Triple(nextPrefix, count, currentDepth < maxDepth)
+            } else null
         }
     }
     
-    val totalWithItems = displayItems.count { it.second > 0 }
+    val totalWithItems = displayItems.size
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Card(
