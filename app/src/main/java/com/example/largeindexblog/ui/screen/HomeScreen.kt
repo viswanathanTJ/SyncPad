@@ -363,6 +363,9 @@ fun HomeScreen(
                                 }
                             }
                             
+                            // Track current section for headers in list
+                            var currentSectionChar: String? = null
+                            
                             items(
                                 count = pagedBlogs.itemCount,
                                 key = pagedBlogs.itemKey { it.id },
@@ -370,6 +373,27 @@ fun HomeScreen(
                             ) { index ->
                                 val blog = pagedBlogs[index]
                                 if (blog != null) {
+                                    // Show section headers when NOT filtered (no prefix filter)
+                                    if (sectionPrefix.isEmpty()) {
+                                        val firstChar = blog.title.firstOrNull()
+                                            ?.uppercaseChar()?.toString() ?: "#"
+                                        
+                                        if (firstChar != currentSectionChar) {
+                                            currentSectionChar = firstChar
+                                            // Get count from alphabet index
+                                            val charCount = (alphabetIndex as? UiState.Success)?.data
+                                                ?.find { it.prefix == firstChar && it.depth == 1 }?.count ?: 0
+                                            
+                                            SectionHeader(
+                                                prefix = firstChar,
+                                                count = charCount,
+                                                canDrillDown = maxDepth > 1,
+                                                onClick = { 
+                                                    popupPrefix = firstChar
+                                                }
+                                            )
+                                        }
+                                    }
                                     
                                     BlogListItemCard(
                                         blog = blog,

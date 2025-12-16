@@ -134,14 +134,7 @@ private fun HierarchicalIndexItem(
             color = AlphabetActiveColor,
             textAlign = TextAlign.Center
         )
-        Text(
-            text = count.toString(),
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 9.sp
-            ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
+        // Count hidden per user request - only show prefix
     }
 }
 
