@@ -19,6 +19,15 @@ android {
     namespace = "com.viswa2k.syncpad"
     compileSdk = 35
 
+    signingConfigs {
+        create("release") {
+            storeFile = file(localProperties.getProperty("KEYSTORE_FILE", "${System.getProperty("user.home")}/Documents/viswa2k.jks"))
+            storePassword = localProperties.getProperty("KEYSTORE_PASSWORD", "")
+            keyAlias = localProperties.getProperty("KEY_ALIAS", "")
+            keyPassword = localProperties.getProperty("KEY_PASSWORD", "")
+        }
+    }
+
     defaultConfig {
         applicationId = "com.viswa2k.syncpad"
         minSdk = 33
@@ -47,11 +56,13 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("debug") // TODO: Use release signing
         }
     }
 

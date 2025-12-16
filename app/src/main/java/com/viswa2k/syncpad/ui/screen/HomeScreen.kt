@@ -4,6 +4,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -44,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -53,6 +60,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -105,9 +113,52 @@ fun HomeScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     
+    // Auto-sync on first app open
+    var hasAutoSynced by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!hasAutoSynced && viewModel.isSyncConfigured()) {
+            hasAutoSynced = true
+            viewModel.performSync()
+        }
+    }
+    
+    // Network connectivity listener for auto-sync on internet restore
+    DisposableEffect(context) {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                // Internet restored - trigger sync
+                scope.launch {
+                    if (viewModel.isSyncConfigured() && !syncState.isSyncing) {
+                        viewModel.performSync()
+                    }
+                }
+            }
+        }
+        
+        val request = android.net.NetworkRequest.Builder()
+            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            .build()
+        
+        try {
+            connectivityManager.registerNetworkCallback(request, networkCallback)
+        } catch (e: Exception) {
+            // Ignore if already registered or permission issues
+        }
+        
+        onDispose {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback)
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+    }
+    
     // Refresh list when screen resumes (e.g., returning from add/edit)
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshList()
@@ -151,9 +202,7 @@ fun HomeScreen(
                 viewModel.resetSyncState()
             }
             is SyncState.Success -> {
-                // Auto-dismiss after 3 seconds
-                delay(3000)
-                viewModel.resetSyncState()
+                // Don't auto-dismiss - user must manually close
             }
             else -> {}
         }
@@ -211,10 +260,21 @@ fun HomeScreen(
                             enabled = !syncState.isSyncing
                         ) {
                             if (syncState.isSyncing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(24.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                // Rotating sync icon
+                                val infiniteTransition = rememberInfiniteTransition(label = "sync")
+                                val rotation by infiniteTransition.animateFloat(
+                                    initialValue = 0f,
+                                    targetValue = 360f,
+                                    animationSpec = infiniteRepeatable(
+                                        animation = tween(1000, easing = LinearEasing),
+                                        repeatMode = RepeatMode.Restart
+                                    ),
+                                    label = "syncRotation"
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.Sync,
+                                    contentDescription = "Syncing",
+                                    modifier = Modifier.graphicsLayer { rotationZ = rotation }
                                 )
                             } else {
                                 Icon(
@@ -245,13 +305,16 @@ fun HomeScreen(
                     )
                 )
                 
-                // Sync status bar
+                // Sync status bar - only show success result (syncing shows rotating icon)
                 AnimatedVisibility(
-                    visible = syncState is SyncState.Syncing || syncState is SyncState.Success,
+                    visible = syncState is SyncState.Success,
                     enter = slideInVertically() + fadeIn(),
                     exit = slideOutVertically() + fadeOut()
                 ) {
-                    SyncStatusBar(syncState = syncState)
+                    SyncStatusBar(
+                        syncState = syncState,
+                        onClose = { viewModel.resetSyncState() }
+                    )
                 }
             }
         },
@@ -474,54 +537,40 @@ fun HomeScreen(
 }
 
 /**
- * Sync status bar showing download/upload/delete counts.
+ * Sync status bar showing download/upload/delete counts with close button.
  */
 @Composable
-private fun SyncStatusBar(syncState: SyncState) {
-    val backgroundColor = when (syncState) {
-        is SyncState.Success -> MaterialTheme.colorScheme.secondaryContainer
-        is SyncState.Syncing -> MaterialTheme.colorScheme.tertiaryContainer
-        else -> MaterialTheme.colorScheme.surfaceVariant
-    }
-    
-    val textColor = when (syncState) {
-        is SyncState.Success -> MaterialTheme.colorScheme.onSecondaryContainer
-        is SyncState.Syncing -> MaterialTheme.colorScheme.onTertiaryContainer
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
+private fun SyncStatusBar(
+    syncState: SyncState,
+    onClose: () -> Unit
+) {
+    val backgroundColor = MaterialTheme.colorScheme.secondaryContainer
+    val textColor = MaterialTheme.colorScheme.onSecondaryContainer
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(backgroundColor)
             .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.Center,
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        when (syncState) {
-            is SyncState.Syncing -> {
-                CircularProgressIndicator(
-                    modifier = Modifier
-                        .size(16.dp)
-                        .padding(end = 8.dp),
-                    strokeWidth = 2.dp,
-                    color = textColor
-                )
-                Text(
-                    text = "Syncing...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = textColor
-                )
-            }
-            is SyncState.Success -> {
-                val result = syncState.result
-                Text(
-                    text = "Sync complete: ↓${result.downloaded} downloaded  ↑${result.uploaded} uploaded  ✕${result.deleted} deleted",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = textColor
-                )
-            }
-            else -> {}
+        if (syncState is SyncState.Success) {
+            val result = syncState.result
+            Text(
+                text = "↓${result.downloaded}  ↑${result.uploaded}  ✕${result.deleted}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = textColor,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "✕",
+                style = MaterialTheme.typography.titleMedium,
+                color = textColor,
+                modifier = Modifier
+                    .clickable(onClick = onClose)
+                    .padding(horizontal = 8.dp)
+            )
         }
     }
 }

@@ -304,6 +304,13 @@ class BlogListViewModel @Inject constructor(
     }
 
     /**
+     * Check if sync is configured (API key and base URL available).
+     */
+    fun isSyncConfigured(): Boolean {
+        return syncManager.isSyncConfigured()
+    }
+
+    /**
      * Get the first blog ID for a given prefix (for scrolling to position).
      */
     suspend fun getFirstBlogIdForPrefix(prefix: String): Long? {

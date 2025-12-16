@@ -8,12 +8,12 @@ import com.viswa2k.syncpad.repository.PrefixIndexRepository
 import com.viswa2k.syncpad.sync.SyncManager
 import com.viswa2k.syncpad.ui.state.UiState
 import com.viswa2k.syncpad.util.AppLogger
+import android.os.Build
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.util.UUID
 import javax.inject.Inject
 
 /**
@@ -127,7 +127,7 @@ class AddBlogViewModel @Inject constructor(
                     titlePrefix = titlePrefix,
                     createdAt = now,
                     updatedAt = now,
-                    deviceId = UUID.randomUUID().toString().take(8)
+                    deviceId = Build.MODEL
                 )
 
                 val result = if (currentBlog != null) {

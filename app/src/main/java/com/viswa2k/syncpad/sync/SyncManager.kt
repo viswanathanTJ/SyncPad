@@ -112,23 +112,32 @@ class SyncManager @Inject constructor(
                 
                 // Get last sync time
                 val lastSyncTime = syncRepository.getLastSyncTime().getOrNull() ?: 0L
-                AppLogger.d(TAG, "Last sync time: $lastSyncTime")
+                AppLogger.i(TAG, "Last sync time: $lastSyncTime (${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(lastSyncTime))})")
                 
                 var downloadedCount = 0
                 var uploadedCount = 0
+                var receivedFromServer = 0  // Track items received from server (even if duplicates)
                 val affectedPrefixes = mutableSetOf<String>()
+                
+                // Get existing local count for comparison
+                val localBlogCount = blogRepository.getBlogCount().getOrNull() ?: 0
                 
                 // STEP 1: Download from server
                 val downloadResult = supabaseApi.getBlogsAfter(lastSyncTime)
                 downloadResult.fold(
                     onSuccess = { serverBlogs ->
-                        AppLogger.d(TAG, "Received ${serverBlogs.size} blogs from server")
+                        receivedFromServer = serverBlogs.size
+                        AppLogger.i(TAG, "Received $receivedFromServer blogs from server for sync")
                         
-                        // Convert to entities and insert into local DB
-                        val entities = serverBlogs.map { it.toBlogEntity() }
-                        if (entities.isNotEmpty()) {
+                        if (serverBlogs.isNotEmpty()) {
+                            // Convert to entities and insert into local DB
+                            val entities = serverBlogs.map { it.toBlogEntity() }
                             blogRepository.insertBlogs(entities)
-                            downloadedCount = entities.size
+                            
+                            // Count only truly NEW items (not updates)
+                            val newBlogCount = blogRepository.getBlogCount().getOrNull() ?: 0
+                            downloadedCount = maxOf(0, newBlogCount - localBlogCount)
+                            
                             affectedPrefixes.addAll(entities.map { it.titlePrefix })
                         }
                     },
@@ -139,23 +148,28 @@ class SyncManager @Inject constructor(
                 )
                 
                 // STEP 2: Upload local changes to server
-                val localChanges = blogRepository.getBlogsForSync(lastSyncTime).getOrNull() ?: emptyList()
-                if (localChanges.isNotEmpty()) {
-                    AppLogger.d(TAG, "Found ${localChanges.size} local changes to upload")
-                    
-                    val uploadDtos = localChanges.map { BlogDto.fromBlogEntity(it) }
-                    val uploadResult = supabaseApi.upsertBlogs(uploadDtos)
-                    
-                    uploadResult.fold(
-                        onSuccess = { count ->
-                            uploadedCount = count
-                            affectedPrefixes.addAll(localChanges.map { it.titlePrefix })
-                        },
-                        onFailure = { e ->
-                            AppLogger.e(TAG, "Failed to upload to server", e)
-                            // Don't fail the entire sync, just log the error
-                        }
-                    )
+                // ONLY upload if:
+                // - lastSyncTime > 0 (not first sync)
+                // - receivedFromServer == 0 (server returned nothing, so we have local-only changes)
+                if (lastSyncTime > 0 && receivedFromServer == 0) {
+                    val localChanges = blogRepository.getBlogsForSync(lastSyncTime).getOrNull() ?: emptyList()
+                    if (localChanges.isNotEmpty()) {
+                        AppLogger.d(TAG, "Found ${localChanges.size} local changes to upload")
+                        
+                        val uploadDtos = localChanges.map { BlogDto.fromBlogEntity(it) }
+                        val uploadResult = supabaseApi.upsertBlogs(uploadDtos)
+                        
+                        uploadResult.fold(
+                            onSuccess = { count ->
+                                uploadedCount = count
+                                affectedPrefixes.addAll(localChanges.map { it.titlePrefix })
+                            },
+                            onFailure = { e ->
+                                AppLogger.e(TAG, "Failed to upload to server", e)
+                                // Don't fail the entire sync, just log the error
+                            }
+                        )
+                    }
                 }
                 
                 // STEP 3: Update last sync time
@@ -172,7 +186,7 @@ class SyncManager @Inject constructor(
                     uploaded = uploadedCount,
                     deleted = 0,
                     isSuccess = true,
-                    message = "Sync completed"
+                    message = if (downloadedCount == 0 && uploadedCount == 0) "Already in sync" else "Sync completed"
                 )
                 
                 AppLogger.i(TAG, "Incremental sync complete: ${result.toDisplayString()}")
