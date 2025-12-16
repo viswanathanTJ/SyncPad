@@ -200,19 +200,6 @@ fun SettingsScreen(
 
                 HorizontalDivider()
 
-                // Show Bottom Index
-                SettingsItem(
-                    title = "Show Bottom Index",
-                    subtitle = if (settings.showBottomIndex) "Enabled" else "Disabled"
-                ) {
-                    Switch(
-                        checked = settings.showBottomIndex,
-                        onCheckedChange = { viewModel.setShowBottomIndex(it) }
-                    )
-                }
-
-                HorizontalDivider()
-
                 // Rebuild Index
                 Row(
                     modifier = Modifier

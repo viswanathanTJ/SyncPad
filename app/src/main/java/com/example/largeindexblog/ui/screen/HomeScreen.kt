@@ -104,6 +104,20 @@ fun HomeScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    
+    // Refresh list when screen resumes (e.g., returning from add/edit)
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshList()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     // Handle index state changes
     LaunchedEffect(indexState) {
@@ -172,7 +186,7 @@ fun HomeScreen(
                 TopAppBar(
                     title = {
                         Column {
-                            Text("LargeIndexBlog")
+                            Text("SyncPad")
                             if (prefixFilter != null) {
                                 Text(
                                     text = "Filtered: $prefixFilter",
@@ -353,9 +367,9 @@ fun HomeScreen(
                                     SectionHeader(
                                         prefix = sectionPrefix,
                                         count = pagedBlogs.itemCount,
-                                        canDrillDown = sectionPrefix.length < maxDepth,
+                                        canDrillDown = sectionPrefix.length < maxDepth && pagedBlogs.itemCount > 50,
                                         onClick = {
-                                            if (sectionPrefix.length < maxDepth) {
+                                            if (sectionPrefix.length < maxDepth && pagedBlogs.itemCount > 50) {
                                                 popupPrefix = sectionPrefix
                                             }
                                         }
@@ -387,9 +401,11 @@ fun HomeScreen(
                                             SectionHeader(
                                                 prefix = firstChar,
                                                 count = charCount,
-                                                canDrillDown = maxDepth > 1,
+                                                canDrillDown = maxDepth > 1 && charCount > 50,
                                                 onClick = { 
-                                                    popupPrefix = firstChar
+                                                    if (charCount > 50) {
+                                                        popupPrefix = firstChar
+                                                    }
                                                 }
                                             )
                                         }

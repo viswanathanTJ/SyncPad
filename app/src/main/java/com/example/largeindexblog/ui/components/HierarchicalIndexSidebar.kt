@@ -2,6 +2,7 @@ package com.example.largeindexblog.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,7 +64,7 @@ fun HierarchicalIndexSidebar(
         indices.filter { it.depth == 1 }.sortedBy { it.prefix }
     }
 
-    // State for popup navigation
+    // State for popup navigation (on long press)
     var currentPopupPrefix: String? by remember { mutableStateOf(null) }
 
     LazyColumn(
@@ -83,13 +84,23 @@ fun HierarchicalIndexSidebar(
                 prefix = indexEntry.prefix,
                 count = indexEntry.count,
                 onClick = {
-                    currentPopupPrefix = indexEntry.prefix
+                    // Tap: scroll to section
+                    onPrefixSelected(indexEntry.prefix)
+                },
+                onLongClick = {
+                    // Long press: show popup if > 50 items
+                    if (indexEntry.count > 50) {
+                        currentPopupPrefix = indexEntry.prefix
+                    } else {
+                        // Not enough items for drill-down, just scroll
+                        onPrefixSelected(indexEntry.prefix)
+                    }
                 }
             )
         }
     }
 
-    // Show drill-down popup when a prefix is clicked
+    // Show drill-down popup on long press
     currentPopupPrefix?.let { prefix ->
         DrillDownPopup(
             parentPrefix = prefix,
@@ -112,16 +123,21 @@ fun HierarchicalIndexSidebar(
 /**
  * Single item in the hierarchical sidebar.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun HierarchicalIndexItem(
     prefix: String,
     count: Int,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
             .width(52.dp)
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .padding(horizontal = 2.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
