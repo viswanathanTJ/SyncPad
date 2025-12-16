@@ -94,6 +94,17 @@ class BlogListViewModel @Inject constructor(
             initialValue = 0
         )
 
+    // Filtered count - tracks actual count for current prefix filter
+    private val _filteredCount = MutableStateFlow(0)
+    val filteredCount: StateFlow<Int> = _filteredCount.asStateFlow()
+
+    /**
+     * Get count for a specific prefix (for section header).
+     */
+    suspend fun getCountByPrefix(prefix: String): Int {
+        return blogRepository.getCountByPrefix(prefix).getOrNull() ?: 0
+    }
+
     // ============================================
     // SETTINGS
     // ============================================

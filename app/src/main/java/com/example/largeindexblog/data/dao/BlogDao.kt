@@ -63,6 +63,9 @@ interface BlogDao {
     @Query("SELECT COUNT(*) FROM blogs")
     fun getCountFlow(): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM blogs WHERE UPPER(SUBSTR(title, 1, :prefixLength)) = UPPER(:prefix)")
+    suspend fun getCountByPrefix(prefix: String, prefixLength: Int = prefix.length): Int
+
     // ============================================
     // PAGING QUERIES (Cursor-based, NO OFFSET)
     // Returns only id, title, created_at for list performance

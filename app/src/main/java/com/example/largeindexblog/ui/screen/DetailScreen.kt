@@ -1,5 +1,8 @@
 package com.example.largeindexblog.ui.screen
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -9,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
@@ -30,9 +34,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.largeindexblog.ui.components.ErrorDisplay
@@ -42,6 +48,7 @@ import com.example.largeindexblog.ui.viewmodel.BlogDetailViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /**
  * Detail screen for viewing blog content.
@@ -59,6 +66,24 @@ fun DetailScreen(
     
     val snackbarHostState = remember { SnackbarHostState() }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    
+    // Copy to clipboard function
+    fun copyToClipboard() {
+        val state = blogState
+        if (state is UiState.Success) {
+            val blog = state.data
+            val textToCopy = if (!blog.content.isNullOrBlank()) {
+                "${blog.title}\n\n${blog.content}"
+            } else {
+                blog.title
+            }
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText("SyncPad Note", textToCopy)
+            clipboard.setPrimaryClip(clip)
+        }
+    }
 
     // Handle delete state
     LaunchedEffect(deleteState) {
@@ -128,6 +153,21 @@ fun DetailScreen(
                 actions = {
                     if (blogState is UiState.Success) {
                         val blogId = (blogState as UiState.Success).data.id
+                        // Copy button
+                        IconButton(onClick = { 
+                            copyToClipboard()
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    message = "Copied to clipboard",
+                                    duration = SnackbarDuration.Short
+                                )
+                            }
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy"
+                            )
+                        }
                         IconButton(onClick = { onEditClick(blogId) }) {
                             Icon(
                                 imageVector = Icons.Default.Edit,

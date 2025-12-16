@@ -364,12 +364,18 @@ fun HomeScreen(
                             // Show section header at top when filtered
                             if (sectionPrefix.isNotEmpty()) {
                                 item(key = "section_header_$sectionPrefix") {
+                                    // Load actual count from database
+                                    var actualCount by remember(sectionPrefix) { mutableStateOf(0) }
+                                    LaunchedEffect(sectionPrefix) {
+                                        actualCount = viewModel.getCountByPrefix(sectionPrefix)
+                                    }
+                                    
                                     SectionHeader(
                                         prefix = sectionPrefix,
-                                        count = pagedBlogs.itemCount,
-                                        canDrillDown = sectionPrefix.length < maxDepth && pagedBlogs.itemCount > 50,
+                                        count = actualCount,
+                                        canDrillDown = sectionPrefix.length < maxDepth && actualCount > 50,
                                         onClick = {
-                                            if (sectionPrefix.length < maxDepth && pagedBlogs.itemCount > 50) {
+                                            if (sectionPrefix.length < maxDepth && actualCount > 50) {
                                                 popupPrefix = sectionPrefix
                                             }
                                         }

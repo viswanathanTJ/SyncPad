@@ -188,6 +188,21 @@ class BlogRepository @Inject constructor(
     }
 
     /**
+     * Get count of blogs matching a specific prefix.
+     */
+    suspend fun getCountByPrefix(prefix: String): Result<Int> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val count = blogDao.getCountByPrefix(prefix, prefix.length)
+                Result.success(count)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting count by prefix", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
      * Get the first blog ID for a given prefix.
      * Used for alphabet sidebar navigation.
      */

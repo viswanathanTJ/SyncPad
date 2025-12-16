@@ -192,8 +192,8 @@ fun SettingsScreen(
                     Slider(
                         value = settings.maxDepth.toFloat(),
                         onValueChange = { viewModel.setMaxDepth(it.toInt()) },
-                        valueRange = 1f..10f,
-                        steps = 8,
+                        valueRange = 1f..5f,
+                        steps = 3,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
