@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -21,10 +22,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,32 +45,22 @@ import com.example.largeindexblog.ui.theme.AlphabetActiveColor
 /**
  * Hierarchical alphabet sidebar with drill-down navigation.
  * 
- * Uses the prefix_index table which has:
- * - prefix: the prefix string (A, AA, AAA, etc.)
- * - depth: length of the prefix (1, 2, 3, etc.)
- * - count: number of blogs with this prefix
- * - first_blog_id: ID of first blog for navigation
- * 
- * Shows first-level (depth=1) in sidebar, popup shows next level on click.
+ * Uses the prefix_index table for sidebar, and dynamically queries
+ * real counts from the database for popup drill-down.
  */
 @Composable
 fun HierarchicalIndexSidebar(
     indices: List<PrefixIndexEntity>,
     maxDepth: Int,
     onPrefixSelected: (String) -> Unit,
+    onGetChildCounts: suspend (String) -> Map<String, Int>,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
     
-    // Group indices by depth for efficient lookup
-    val indicesByDepth = remember(indices) {
-        indices.groupBy { it.depth }
-    }
-    
     // Get depth=1 prefixes (single characters) for sidebar
-    val level1Prefixes = remember(indicesByDepth) {
-        (indicesByDepth[1] ?: emptyList())
-            .sortedBy { it.prefix }
+    val level1Prefixes = remember(indices) {
+        indices.filter { it.depth == 1 }.sortedBy { it.prefix }
     }
 
     // State for popup navigation
@@ -86,17 +79,10 @@ fun HierarchicalIndexSidebar(
             items = level1Prefixes,
             key = { "${it.prefix}_${it.depth}" }
         ) { indexEntry ->
-            // Check if this prefix has children at next depth
-            val hasChildren = indicesByDepth[2]?.any { 
-                it.prefix.startsWith(indexEntry.prefix) 
-            } ?: false
-            
             HierarchicalIndexItem(
                 prefix = indexEntry.prefix,
                 count = indexEntry.count,
-                hasChildren = hasChildren,
                 onClick = {
-                    // Open popup for drilling down
                     currentPopupPrefix = indexEntry.prefix
                 }
             )
@@ -107,8 +93,8 @@ fun HierarchicalIndexSidebar(
     currentPopupPrefix?.let { prefix ->
         DrillDownPopup(
             parentPrefix = prefix,
-            indicesByDepth = indicesByDepth,
             maxDepth = maxDepth,
+            onGetChildCounts = onGetChildCounts,
             onPrefixSelected = { selectedPrefix ->
                 onPrefixSelected(selectedPrefix)
                 currentPopupPrefix = null
@@ -130,7 +116,6 @@ fun HierarchicalIndexSidebar(
 private fun HierarchicalIndexItem(
     prefix: String,
     count: Int,
-    hasChildren: Boolean,
     onClick: () -> Unit
 ) {
     Column(
@@ -146,7 +131,7 @@ private fun HierarchicalIndexItem(
                 fontWeight = FontWeight.Bold,
                 fontSize = 14.sp
             ),
-            color = if (hasChildren) AlphabetActiveColor else MaterialTheme.colorScheme.onSurface,
+            color = AlphabetActiveColor,
             textAlign = TextAlign.Center
         )
         Text(
@@ -162,13 +147,13 @@ private fun HierarchicalIndexItem(
 
 /**
  * Popup dialog for drill-down navigation.
- * Uses prefix_index data grouped by depth.
+ * Dynamically loads real counts from database.
  */
 @Composable
 private fun DrillDownPopup(
     parentPrefix: String,
-    indicesByDepth: Map<Int, List<PrefixIndexEntity>>,
     maxDepth: Int,
+    onGetChildCounts: suspend (String) -> Map<String, Int>,
     onPrefixSelected: (String) -> Unit,
     onDismiss: () -> Unit,
     onDrillDeeper: (String) -> Unit
@@ -176,33 +161,22 @@ private fun DrillDownPopup(
     val nextDepth = parentPrefix.length + 1
     val canDrillDeeper = nextDepth < maxDepth
     
-    // Get children at next depth that start with parent prefix
-    val childrenFromIndex = indicesByDepth[nextDepth]
-        ?.filter { it.prefix.startsWith(parentPrefix) }
-        ?.sortedBy { it.prefix }
-        ?: emptyList()
+    // State for loading child counts
+    var isLoading by remember { mutableStateOf(true) }
+    var childCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     
-    // Create display items: use index data OR generate A-Z with 0 counts
-    val displayItems = if (childrenFromIndex.isNotEmpty()) {
-        // Use actual index data
-        childrenFromIndex.map { 
-            DisplayItem(
-                prefix = it.prefix,
-                count = it.count,
-                hasChildren = indicesByDepth[nextDepth + 1]?.any { child -> 
-                    child.prefix.startsWith(it.prefix) 
-                } ?: false
-            )
-        }
-    } else {
-        // Generate all possible next-level prefixes with counts from index
+    // Load child counts from database
+    LaunchedEffect(parentPrefix) {
+        isLoading = true
+        childCounts = onGetChildCounts(parentPrefix)
+        isLoading = false
+    }
+    
+    // Generate display items from actual counts
+    val displayItems = remember(childCounts, parentPrefix) {
         ('A'..'Z').map { char ->
             val nextPrefix = parentPrefix + char
-            // Look up count from any depth that starts with this prefix
-            val count = indicesByDepth.values.flatten()
-                .filter { it.prefix.startsWith(nextPrefix) }
-                .maxOfOrNull { if (it.prefix == nextPrefix) it.count else 0 } ?: 0
-            
+            val count = childCounts[nextPrefix] ?: 0
             DisplayItem(
                 prefix = nextPrefix,
                 count = count,
@@ -210,6 +184,8 @@ private fun DrillDownPopup(
             )
         }
     }
+    
+    val totalWithItems = displayItems.count { it.count > 0 }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -263,7 +239,7 @@ private fun DrillDownPopup(
                 }
 
                 Text(
-                    text = "Depth $nextDepth / $maxDepth • ${childrenFromIndex.size} indexed",
+                    text = "Depth $nextDepth / $maxDepth • $totalWithItems with items",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 4.dp)
@@ -271,33 +247,44 @@ private fun DrillDownPopup(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Grid of next-level prefixes
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(4),
-                    modifier = Modifier.height(350.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(
-                        items = displayItems,
-                        key = { it.prefix }
-                    ) { item ->
-                        DrillDownGridItem(
-                            displayPrefix = item.prefix.takeLast(2),
-                            fullPrefix = item.prefix,
-                            count = item.count,
-                            hasChildren = item.hasChildren,
-                            onClick = {
-                                if (item.count > 0) {
-                                    onPrefixSelected(item.prefix)
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(350.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    // Grid of next-level prefixes
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(4),
+                        modifier = Modifier.height(350.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(
+                            items = displayItems,
+                            key = { it.prefix }
+                        ) { item ->
+                            DrillDownGridItem(
+                                displayPrefix = item.prefix.takeLast(2),
+                                fullPrefix = item.prefix,
+                                count = item.count,
+                                hasChildren = item.hasChildren,
+                                onClick = {
+                                    if (item.count > 0) {
+                                        onPrefixSelected(item.prefix)
+                                    }
+                                },
+                                onDrillClick = {
+                                    if (item.hasChildren) {
+                                        onDrillDeeper(item.prefix)
+                                    }
                                 }
-                            },
-                            onDrillClick = {
-                                if (item.hasChildren) {
-                                    onDrillDeeper(item.prefix)
-                                }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
 

@@ -282,7 +282,10 @@ fun HomeScreen(
                     HierarchicalIndexSidebar(
                         indices = state.data,
                         maxDepth = maxDepth,
-                        onPrefixSelected = { viewModel.filterByPrefix(it) }
+                        onPrefixSelected = { viewModel.filterByPrefix(it) },
+                        onGetChildCounts = { parentPrefix -> 
+                            viewModel.getChildPrefixCounts(parentPrefix) 
+                        }
                     )
                 }
                 else -> {
@@ -290,7 +293,8 @@ fun HomeScreen(
                     HierarchicalIndexSidebar(
                         indices = emptyList(),
                         maxDepth = maxDepth,
-                        onPrefixSelected = {}
+                        onPrefixSelected = {},
+                        onGetChildCounts = { emptyMap() }
                     )
                 }
             }
@@ -331,16 +335,34 @@ fun HomeScreen(
                         )
                     }
                     else -> {
-                        // Get prefix counts from alphabet index
-                        val prefixCounts = (alphabetIndex as? UiState.Success)?.data
-                            ?.associate { it.prefix to it.count } ?: emptyMap()
+                        // State for popup drill-down from section header
+                        var popupPrefix by remember { mutableStateOf<String?>(null) }
+                        val coroutineScope = rememberCoroutineScope()
                         
-                        var currentSectionPrefix: String? = null
+                        // Current filter section prefix (use filter or first char of blogs)
+                        val sectionPrefix = prefixFilter ?: ""
+                        var headerShown by remember(sectionPrefix) { mutableStateOf(false) }
                         
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
+                            // Show section header at top when filtered
+                            if (sectionPrefix.isNotEmpty()) {
+                                item(key = "section_header_$sectionPrefix") {
+                                    SectionHeader(
+                                        prefix = sectionPrefix,
+                                        count = pagedBlogs.itemCount,
+                                        canDrillDown = sectionPrefix.length < maxDepth,
+                                        onClick = {
+                                            if (sectionPrefix.length < maxDepth) {
+                                                popupPrefix = sectionPrefix
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                            
                             items(
                                 count = pagedBlogs.itemCount,
                                 key = pagedBlogs.itemKey { it.id },
@@ -348,23 +370,6 @@ fun HomeScreen(
                             ) { index ->
                                 val blog = pagedBlogs[index]
                                 if (blog != null) {
-                                    // Use the actual titlePrefix from the blog
-                                    // This respects the multi-character prefix depth 
-                                    // (e.g., "AA", "AB" when A has 50+ items)
-                                    val sectionPrefix = blog.titlePrefix.ifEmpty { 
-                                        blog.title.firstOrNull()?.uppercaseChar()?.toString() ?: "#" 
-                                    }
-                                    
-                                    // Show section header when prefix changes
-                                    if (sectionPrefix != currentSectionPrefix) {
-                                        currentSectionPrefix = sectionPrefix
-                                        val count = prefixCounts[sectionPrefix] ?: 0
-                                        
-                                        SectionHeader(
-                                            prefix = sectionPrefix,
-                                            count = count
-                                        )
-                                    }
                                     
                                     BlogListItemCard(
                                         blog = blog,
@@ -400,6 +405,20 @@ fun HomeScreen(
                                     )
                                 }
                             }
+                        }
+                        
+                        // Popup for section header drill-down
+                        popupPrefix?.let { prefix ->
+                            DrillDownPopupFromHeader(
+                                parentPrefix = prefix,
+                                maxDepth = maxDepth,
+                                onGetChildCounts = { viewModel.getChildPrefixCounts(it) },
+                                onPrefixSelected = { selectedPrefix ->
+                                    viewModel.filterByPrefix(selectedPrefix)
+                                    popupPrefix = null
+                                },
+                                onDismiss = { popupPrefix = null }
+                            )
                         }
                     }
                 }
@@ -547,26 +566,235 @@ private fun BlogListItemCard(
 @Composable
 private fun SectionHeader(
     prefix: String,
-    count: Int
+    count: Int,
+    canDrillDown: Boolean = false,
+    onClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant)
+            .then(
+                if (onClick != null && canDrillDown) {
+                    Modifier.clickable(onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = prefix,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = prefix,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            if (canDrillDown) {
+                Text(
+                    text = " ▸",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
         Text(
             text = "$count items",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+/**
+ * Popup dialog for drilling down from section header.
+ * Uses dynamic database queries for real counts.
+ */
+@Composable
+private fun DrillDownPopupFromHeader(
+    parentPrefix: String,
+    maxDepth: Int,
+    onGetChildCounts: suspend (String) -> Map<String, Int>,
+    onPrefixSelected: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val nextDepth = parentPrefix.length + 1
+    val canDrillDeeper = nextDepth < maxDepth
+    
+    // State for loading and drilling
+    var isLoading by remember { mutableStateOf(true) }
+    var childCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    var currentPrefix by remember { mutableStateOf(parentPrefix) }
+    
+    // Load child counts from database
+    LaunchedEffect(currentPrefix) {
+        isLoading = true
+        childCounts = onGetChildCounts(currentPrefix)
+        isLoading = false
+    }
+    
+    val currentDepth = currentPrefix.length + 1
+    val displayItems = remember(childCounts, currentPrefix) {
+        ('A'..'Z').map { char ->
+            val nextPrefix = currentPrefix + char
+            val count = childCounts[nextPrefix] ?: 0
+            Triple(nextPrefix, count, count > 0 && currentDepth < maxDepth)
+        }
+    }
+    
+    val totalWithItems = displayItems.count { it.second > 0 }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Back button if not at parent level
+                    if (currentPrefix.length > parentPrefix.length) {
+                        Text(
+                            text = "← ${currentPrefix.dropLast(1)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clickable { currentPrefix = currentPrefix.dropLast(1) }
+                                .padding(8.dp)
+                        )
+                    } else {
+                        Spacer(modifier = Modifier.width(60.dp))
+                    }
+                    
+                    Text(
+                        text = currentPrefix,
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    )
+                    
+                    Text(
+                        text = "✕",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clickable(onClick = onDismiss)
+                            .padding(8.dp)
+                    )
+                }
+
+                Text(
+                    text = "Depth $currentDepth / $maxDepth • $totalWithItems with items",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+
+                Spacer(modifier = Modifier.size(8.dp))
+
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .size(350.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    // Grid of next-level prefixes
+                    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(4),
+                        modifier = Modifier.size(350.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(displayItems.size) { index ->
+                            val (prefix, count, hasChildren) = displayItems[index]
+                            val hasItems = count > 0
+                            
+                            androidx.compose.material3.Surface(
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                                color = if (hasItems) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                }
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = prefix.takeLast(2),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = if (hasItems) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                        },
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                    )
+                                    
+                                    // Count - clickable to select
+                                    Text(
+                                        text = if (hasItems) count.toString() else "-",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (hasItems) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                                        },
+                                        modifier = if (hasItems) {
+                                            Modifier
+                                                .clickable { onPrefixSelected(prefix) }
+                                                .padding(4.dp)
+                                        } else {
+                                            Modifier.padding(4.dp)
+                                        }
+                                    )
+                                    
+                                    // Drill deeper button
+                                    if (hasChildren) {
+                                        Text(
+                                            text = "▸",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier
+                                                .clickable { currentPrefix = prefix }
+                                                .padding(2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.size(8.dp))
+
+                Text(
+                    text = "Tap count to filter • Tap ▸ to drill deeper",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
+        }
     }
 }
 

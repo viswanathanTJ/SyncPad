@@ -143,6 +143,26 @@ interface BlogDao {
     suspend fun getPrefixCounts(depth: Int): List<PrefixCount>
 
     /**
+     * Get child prefix counts for a specific parent prefix.
+     * Used for popup drill-down navigation.
+     * Example: parentPrefix="C" returns counts for CA, CB, CC, etc.
+     */
+    @Query("""
+        SELECT UPPER(SUBSTR(title, 1, :childDepth)) as prefix,
+               COUNT(*) as count,
+               MIN(id) as firstId
+        FROM blogs
+        WHERE UPPER(SUBSTR(title, 1, :parentLength)) = :parentPrefix
+        GROUP BY UPPER(SUBSTR(title, 1, :childDepth))
+        ORDER BY prefix ASC
+    """)
+    suspend fun getChildPrefixCounts(
+        parentPrefix: String,
+        parentLength: Int,
+        childDepth: Int
+    ): List<PrefixCount>
+
+    /**
      * Get blogs for sync - those created or updated after a timestamp.
      */
     @Query("""

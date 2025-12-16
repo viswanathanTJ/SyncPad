@@ -25,24 +25,18 @@ data class BlogDto(
     val id: Long? = null,
     val title: String,
     val content: String?,
-    @SerializedName("title_prefix") val titlePrefix: String,
+    @SerializedName("title_prefix") val titlePrefix: String? = null, // May be null or incorrect from server
     @SerializedName("created_at") val createdAt: Long,
     @SerializedName("updated_at") val updatedAt: Long,
     @SerializedName("device_id") val deviceId: String
 ) {
-    fun toBlogEntity(): BlogEntity {
-        return BlogEntity(
-            id = id ?: 0,
-            title = title,
-            content = content,
-            titlePrefix = titlePrefix,
-            createdAt = createdAt,
-            updatedAt = updatedAt,
-            deviceId = deviceId
-        )
-    }
-
     companion object {
+        /**
+         * Default max depth for prefix generation.
+         * Should match settings but use 5 as fallback.
+         */
+        const val DEFAULT_MAX_DEPTH = 5
+        
         fun fromBlogEntity(entity: BlogEntity): BlogDto {
             return BlogDto(
                 id = entity.id,
@@ -54,6 +48,26 @@ data class BlogDto(
                 deviceId = entity.deviceId
             )
         }
+    }
+    
+    /**
+     * Convert to BlogEntity with LOCALLY calculated title_prefix.
+     * This ensures title_prefix = UPPER(SUBSTR(title, 1, maxDepth))
+     * regardless of what the server sends.
+     */
+    fun toBlogEntity(maxDepth: Int = DEFAULT_MAX_DEPTH): BlogEntity {
+        // ALWAYS recalculate title_prefix locally from title
+        val calculatedPrefix = BlogEntity.generateTitlePrefix(title, maxDepth)
+        
+        return BlogEntity(
+            id = id ?: 0,
+            title = title,
+            content = content,
+            titlePrefix = calculatedPrefix,
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            deviceId = deviceId
+        )
     }
 }
 

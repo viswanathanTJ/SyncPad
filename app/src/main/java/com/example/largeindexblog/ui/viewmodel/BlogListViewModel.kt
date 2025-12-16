@@ -316,4 +316,17 @@ class BlogListViewModel @Inject constructor(
             null
         }
     }
+
+    /**
+     * Get child prefix counts for popup drill-down.
+     * Queries actual blog data to get real counts dynamically.
+     */
+    suspend fun getChildPrefixCounts(parentPrefix: String): Map<String, Int> {
+        return try {
+            blogRepository.getChildPrefixCounts(parentPrefix).getOrNull() ?: emptyMap()
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Error getting child prefix counts for: $parentPrefix", e)
+            emptyMap()
+        }
+    }
 }

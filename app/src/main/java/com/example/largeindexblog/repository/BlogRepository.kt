@@ -320,4 +320,29 @@ class BlogRepository @Inject constructor(
             }
         }
     }
+
+    /**
+     * Get child prefix counts for popup drill-down.
+     * Queries actual blog data to get real counts.
+     */
+    suspend fun getChildPrefixCounts(
+        parentPrefix: String
+    ): Result<Map<String, Int>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val childDepth = parentPrefix.length + 1
+                val counts = blogDao.getChildPrefixCounts(
+                    parentPrefix = parentPrefix.uppercase(),
+                    parentLength = parentPrefix.length,
+                    childDepth = childDepth
+                )
+                val countMap = counts.associate { it.prefix to it.count }
+                AppLogger.d(TAG, "Got ${counts.size} child prefixes for '$parentPrefix'")
+                Result.success(countMap)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting child prefix counts for: $parentPrefix", e)
+                Result.failure(e)
+            }
+        }
+    }
 }
