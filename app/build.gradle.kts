@@ -16,11 +16,11 @@ if (localPropertiesFile.exists()) {
 }
 
 android {
-    namespace = "com.example.largeindexblog"
+    namespace = "com.viswa2k.syncpad"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.largeindexblog"
+        applicationId = "com.viswa2k.syncpad"
         minSdk = 33
         targetSdk = 35
         versionCode = 1

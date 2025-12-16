@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "LargeIndexBlog"
+rootProject.name = "SyncPad"
 include(":app")
