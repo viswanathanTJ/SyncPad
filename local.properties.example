@@ -1,0 +1,19 @@
+# This is a template file for local.properties
+# Copy this file to local.properties and fill in your values.
+# DO NOT commit local.properties to version control!
+
+# Android SDK location (required by Android Studio, usually auto-generated)
+# sdk.dir=/path/to/your/android/sdk
+
+# ============================================
+# SECRETS CONFIGURATION
+# ============================================
+# Add your secrets below. These will be exposed via BuildConfig.
+# If secrets are missing, the app will still build and run gracefully
+# with empty/default values, but certain features may be limited.
+
+# Example API key for future sync backend
+# SYNC_API_KEY=your_api_key_here
+
+# Example backend URL for future sync integration
+# SYNC_BASE_URL=https://your-backend.example.com
