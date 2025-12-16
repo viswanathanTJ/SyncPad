@@ -5,13 +5,13 @@ import androidx.lifecycle.viewModelScope
 import com.example.largeindexblog.data.entity.BlogEntity
 import com.example.largeindexblog.repository.BlogRepository
 import com.example.largeindexblog.repository.PrefixIndexRepository
+import com.example.largeindexblog.sync.SyncManager
 import com.example.largeindexblog.ui.state.UiState
 import com.example.largeindexblog.util.AppLogger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
@@ -22,7 +22,8 @@ import javax.inject.Inject
 @HiltViewModel
 class AddBlogViewModel @Inject constructor(
     private val blogRepository: BlogRepository,
-    private val prefixIndexRepository: PrefixIndexRepository
+    private val prefixIndexRepository: PrefixIndexRepository,
+    private val syncManager: SyncManager
 ) : ViewModel() {
 
     companion object {
@@ -86,27 +87,42 @@ class AddBlogViewModel @Inject constructor(
 
     /**
      * Save a new or updated blog.
+     * Triggers reindex and sync after save.
      */
     fun saveBlog(title: String, content: String) {
         viewModelScope.launch {
             try {
-                if (title.isBlank()) {
-                    _saveState.value = UiState.Error("Title cannot be empty")
+                // Don't save empty blogs
+                if (title.isBlank() && content.isBlank()) {
+                    AppLogger.d(TAG, "Skipping save - empty blog")
+                    _saveState.value = UiState.Success(-1L) // Signal to navigate back
+                    return@launch
+                }
+
+                // Use content first line as title if title is empty
+                val finalTitle = if (title.isBlank()) {
+                    generateTitleFromContent(content)
+                } else {
+                    title
+                }
+
+                if (finalTitle.isBlank()) {
+                    _saveState.value = UiState.Error("Cannot save empty blog")
                     return@launch
                 }
 
                 _saveState.value = UiState.Loading
                 
                 val now = System.currentTimeMillis()
-                val titlePrefix = BlogEntity.generateTitlePrefix(title, DEFAULT_MAX_DEPTH)
+                val titlePrefix = BlogEntity.generateTitlePrefix(finalTitle, DEFAULT_MAX_DEPTH)
                 
                 val blog = currentBlog?.copy(
-                    title = title,
+                    title = finalTitle,
                     content = content,
                     titlePrefix = titlePrefix,
                     updatedAt = now
                 ) ?: BlogEntity(
-                    title = title,
+                    title = finalTitle,
                     content = content,
                     titlePrefix = titlePrefix,
                     createdAt = now,
@@ -122,8 +138,31 @@ class AddBlogViewModel @Inject constructor(
 
                 result.fold(
                     onSuccess = { id ->
+                        AppLogger.i(TAG, "Blog saved successfully: $id")
+                        
                         // Trigger partial index update
-                        prefixIndexRepository.partialUpdate(setOf(titlePrefix))
+                        try {
+                            AppLogger.d(TAG, "Reindexing prefix: $titlePrefix")
+                            prefixIndexRepository.partialUpdate(setOf(titlePrefix))
+                        } catch (e: Exception) {
+                            AppLogger.e(TAG, "Error reindexing after save", e)
+                        }
+                        
+                        // Trigger sync to update cloud
+                        try {
+                            val syncResult = syncManager.performIncrementalSync()
+                            syncResult.fold(
+                                onSuccess = { result ->
+                                    AppLogger.i(TAG, "Sync after save: ${result.toDisplayString()}")
+                                },
+                                onFailure = { e ->
+                                    AppLogger.e(TAG, "Sync failed after save", e)
+                                }
+                            )
+                        } catch (e: Exception) {
+                            AppLogger.e(TAG, "Error syncing after save", e)
+                        }
+                        
                         _saveState.value = UiState.Success(id)
                     },
                     onFailure = { e ->
@@ -142,6 +181,31 @@ class AddBlogViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    /**
+     * Generate title from content - first line or first 200 chars.
+     */
+    private fun generateTitleFromContent(content: String): String {
+        val trimmed = content.trim()
+        val firstLine = trimmed.lines().firstOrNull()?.trim() ?: ""
+        
+        return if (firstLine.isNotBlank()) {
+            cleanTitle(firstLine).take(200)
+        } else {
+            cleanTitle(trimmed).take(200)
+        }
+    }
+
+    /**
+     * Clean title by removing emojis and invalid characters.
+     */
+    private fun cleanTitle(title: String): String {
+        return title
+            .replace(Regex("[\\p{So}\\p{Sk}]"), "")
+            .replace(Regex("[\\p{Cc}\\p{Cf}]"), "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     /**

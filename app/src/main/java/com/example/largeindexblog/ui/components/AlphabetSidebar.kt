@@ -2,18 +2,21 @@ package com.example.largeindexblog.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.largeindexblog.data.entity.PrefixIndexEntity
@@ -22,7 +25,8 @@ import com.example.largeindexblog.ui.theme.AlphabetInactiveColor
 
 /**
  * Alphabet sidebar for quick navigation.
- * Displays available letters from the prefix index.
+ * Displays ALL available prefixes from the prefix index.
+ * Fully scrollable to handle large numbers of entries.
  */
 @Composable
 fun AlphabetSidebar(
@@ -31,72 +35,74 @@ fun AlphabetSidebar(
     onPrefixSelected: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Get unique first letters from indices
-    val availableLetters = indices
-        .map { it.prefix.firstOrNull()?.toString() ?: "" }
-        .filter { it.isNotEmpty() }
-        .distinct()
-        .sorted()
+    val listState = rememberLazyListState()
 
-    // All possible letters
-    val allLetters = ('A'..'Z').map { it.toString() } + listOf("#")
+    // Sort indices alphabetically by prefix
+    val sortedIndices = indices.sortedBy { it.prefix }
 
-    Column(
+    LazyColumn(
+        state = listState,
         modifier = modifier
             .fillMaxHeight()
-            .width(32.dp)
+            .width(48.dp)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             .padding(vertical = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceEvenly
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        allLetters.forEach { letter ->
-            val isAvailable = availableLetters.contains(letter) || 
-                (letter == "#" && availableLetters.any { it.first().isDigit() })
-            val isSelected = selectedPrefix?.firstOrNull()?.toString()?.uppercase() == letter
+        items(
+            items = sortedIndices,
+            key = { "${it.prefix}_${it.depth}" }
+        ) { indexEntry ->
+            val isSelected = selectedPrefix == indexEntry.prefix
 
-            AlphabetItem(
-                letter = letter,
-                isAvailable = isAvailable,
+            IndexItem(
+                prefix = indexEntry.prefix,
+                count = indexEntry.count,
                 isSelected = isSelected,
-                onClick = {
-                    if (isAvailable) {
-                        onPrefixSelected(letter)
-                    }
-                }
+                onClick = { onPrefixSelected(indexEntry.prefix) }
             )
         }
     }
 }
 
 @Composable
-private fun AlphabetItem(
-    letter: String,
-    isAvailable: Boolean,
+private fun IndexItem(
+    prefix: String,
+    count: Int,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
-    val textColor = when {
-        isSelected -> AlphabetActiveColor
-        isAvailable -> MaterialTheme.colorScheme.onSurface
-        else -> AlphabetInactiveColor.copy(alpha = 0.4f)
+    val textColor = if (isSelected) {
+        AlphabetActiveColor
+    } else {
+        MaterialTheme.colorScheme.onSurface
     }
 
     val fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+    val backgroundColor = if (isSelected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0f)
+    }
 
     Box(
         modifier = Modifier
-            .clickable(enabled = isAvailable, onClick = onClick)
-            .padding(vertical = 1.dp),
+            .width(48.dp)
+            .background(backgroundColor)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = letter,
+            text = prefix,
             style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 fontWeight = fontWeight
             ),
-            color = textColor
+            color = textColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
         )
     }
 }

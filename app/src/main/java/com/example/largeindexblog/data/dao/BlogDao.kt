@@ -73,7 +73,7 @@ interface BlogDao {
      * Uses cursor-based pagination for stability at 200k+ rows.
      */
     @Query("""
-        SELECT id, title, created_at as createdAt
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
         FROM blogs
         ORDER BY title_prefix ASC, title ASC, id ASC
         LIMIT :pageSize
@@ -85,7 +85,7 @@ interface BlogDao {
      * Cursor is based on (title_prefix, title, id) for stable sorting.
      */
     @Query("""
-        SELECT id, title, created_at as createdAt
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
         FROM blogs
         WHERE (title_prefix > :cursorPrefix)
            OR (title_prefix = :cursorPrefix AND title > :cursorTitle)
@@ -104,7 +104,7 @@ interface BlogDao {
      * Get blogs starting with a specific prefix for alphabet navigation.
      */
     @Query("""
-        SELECT id, title, created_at as createdAt
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
         FROM blogs
         WHERE title_prefix LIKE :prefixPattern
         ORDER BY title_prefix ASC, title ASC, id ASC
@@ -157,6 +157,59 @@ interface BlogDao {
      */
     @Query("SELECT title_prefix FROM blogs WHERE id = :id")
     suspend fun getTitlePrefixById(id: Long): String?
+
+    // ============================================
+    // SEARCH QUERIES
+    // ============================================
+
+    /**
+     * Search blogs by title only (fast, title-first search).
+     */
+    @Query("""
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
+        FROM blogs
+        WHERE title LIKE :query
+        ORDER BY title ASC
+        LIMIT :limit
+    """)
+    suspend fun searchByTitle(query: String, limit: Int = 50): List<BlogListItem>
+
+    /**
+     * Search blogs by title OR content (advanced search).
+     */
+    @Query("""
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
+        FROM blogs
+        WHERE title LIKE :query OR content LIKE :query
+        ORDER BY title ASC
+        LIMIT :limit
+    """)
+    suspend fun searchByTitleOrContent(query: String, limit: Int = 50): List<BlogListItem>
+
+    /**
+     * Advanced search with date filters.
+     * All date parameters are optional (pass 0 to ignore).
+     */
+    @Query("""
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
+        FROM blogs
+        WHERE (title LIKE :query OR (:includeContent = 1 AND content LIKE :query))
+          AND (:createdAfter = 0 OR created_at > :createdAfter)
+          AND (:createdBefore = 0 OR created_at < :createdBefore)
+          AND (:updatedAfter = 0 OR updated_at > :updatedAfter)
+          AND (:updatedBefore = 0 OR updated_at < :updatedBefore)
+        ORDER BY title ASC
+        LIMIT :limit
+    """)
+    suspend fun advancedSearch(
+        query: String,
+        includeContent: Int = 0,
+        createdAfter: Long = 0,
+        createdBefore: Long = 0,
+        updatedAfter: Long = 0,
+        updatedBefore: Long = 0,
+        limit: Int = 50
+    ): List<BlogListItem>
 }
 
 /**

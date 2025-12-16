@@ -9,6 +9,7 @@ import androidx.navigation.navArgument
 import com.example.largeindexblog.ui.screen.AddBlogScreen
 import com.example.largeindexblog.ui.screen.DetailScreen
 import com.example.largeindexblog.ui.screen.HomeScreen
+import com.example.largeindexblog.ui.screen.SearchScreen
 import com.example.largeindexblog.ui.screen.SettingsScreen
 
 /**
@@ -20,6 +21,7 @@ object Routes {
     const val ADD = "add"
     const val EDIT = "edit/{blogId}"
     const val SETTINGS = "settings"
+    const val SEARCH = "search"
 
     fun detail(blogId: Long) = "detail/$blogId"
     fun edit(blogId: Long) = "edit/$blogId"
@@ -45,6 +47,9 @@ fun AppNavigation(navController: NavHostController) {
                 },
                 onSettingsClick = {
                     navController.navigate(Routes.SETTINGS)
+                },
+                onSearchClick = {
+                    navController.navigate(Routes.SEARCH)
                 }
             )
         }
@@ -89,6 +94,16 @@ fun AppNavigation(navController: NavHostController) {
         // Settings screen
         composable(Routes.SETTINGS) {
             SettingsScreen(
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        // Search screen
+        composable(Routes.SEARCH) {
+            SearchScreen(
+                onBlogClick = { blogId ->
+                    navController.navigate(Routes.detail(blogId))
+                },
                 onNavigateBack = { navController.popBackStack() }
             )
         }

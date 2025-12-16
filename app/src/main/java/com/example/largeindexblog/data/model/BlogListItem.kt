@@ -8,5 +8,6 @@ package com.example.largeindexblog.data.model
 data class BlogListItem(
     val id: Long,
     val title: String,
+    val titlePrefix: String,
     val createdAt: Long
 )

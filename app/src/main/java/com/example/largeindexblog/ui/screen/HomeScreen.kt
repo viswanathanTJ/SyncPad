@@ -1,5 +1,8 @@
 package com.example.largeindexblog.ui.screen
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -11,14 +14,18 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Card
@@ -40,9 +47,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -56,12 +67,14 @@ import com.example.largeindexblog.ui.components.AlphabetSidebar
 import com.example.largeindexblog.ui.components.BottomIndexBar
 import com.example.largeindexblog.ui.components.EmptyState
 import com.example.largeindexblog.ui.components.ErrorDisplay
+import com.example.largeindexblog.ui.components.HierarchicalIndexSidebar
 import com.example.largeindexblog.ui.components.LoadingIndicator
 import com.example.largeindexblog.ui.state.IndexState
 import com.example.largeindexblog.ui.state.SyncState
 import com.example.largeindexblog.ui.state.UiState
 import com.example.largeindexblog.ui.viewmodel.BlogListViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -75,6 +88,7 @@ fun HomeScreen(
     onBlogClick: (Long) -> Unit,
     onAddClick: () -> Unit,
     onSettingsClick: () -> Unit,
+    onSearchClick: () -> Unit,
     viewModel: BlogListViewModel = hiltViewModel()
 ) {
     val pagedBlogs = viewModel.pagedBlogs.collectAsLazyPagingItems()
@@ -83,10 +97,13 @@ fun HomeScreen(
     val blogCount by viewModel.blogCount.collectAsState()
     val showBottomIndex by viewModel.showBottomIndex.collectAsState()
     val fontSize by viewModel.fontSize.collectAsState()
+    val maxDepth by viewModel.maxDepth.collectAsState()
     val indexState by viewModel.indexState.collectAsState()
     val syncState by viewModel.syncState.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     // Handle index state changes
     LaunchedEffect(indexState) {
@@ -128,6 +145,27 @@ fun HomeScreen(
         }
     }
 
+    // Copy content to clipboard
+    fun copyToClipboard(blogId: Long, title: String) {
+        scope.launch {
+            val content = viewModel.getBlogContent(blogId)
+            val textToCopy = if (content.isNullOrBlank()) {
+                title
+            } else {
+                "$title\n\n$content"
+            }
+            
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText("Blog Content", textToCopy)
+            clipboard.setPrimaryClip(clip)
+            
+            snackbarHostState.showSnackbar(
+                message = "Copied to clipboard",
+                duration = SnackbarDuration.Short
+            )
+        }
+    }
+
     Scaffold(
         topBar = {
             Column {
@@ -145,6 +183,14 @@ fun HomeScreen(
                         }
                     },
                     actions = {
+                        // Search button
+                        IconButton(onClick = onSearchClick) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "Search"
+                            )
+                        }
+                        
                         // Sync button
                         IconButton(
                             onClick = { viewModel.performSync() },
@@ -230,20 +276,20 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Alphabet sidebar
+            // Hierarchical alphabet sidebar with drill-down popups
             when (val state = alphabetIndex) {
                 is UiState.Success -> {
-                    AlphabetSidebar(
+                    HierarchicalIndexSidebar(
                         indices = state.data,
-                        selectedPrefix = prefixFilter,
+                        maxDepth = maxDepth,
                         onPrefixSelected = { viewModel.filterByPrefix(it) }
                     )
                 }
                 else -> {
                     // Show empty sidebar while loading
-                    AlphabetSidebar(
+                    HierarchicalIndexSidebar(
                         indices = emptyList(),
-                        selectedPrefix = null,
+                        maxDepth = maxDepth,
                         onPrefixSelected = {}
                     )
                 }
@@ -285,21 +331,46 @@ fun HomeScreen(
                         )
                     }
                     else -> {
+                        // Get prefix counts from alphabet index
+                        val prefixCounts = (alphabetIndex as? UiState.Success)?.data
+                            ?.associate { it.prefix to it.count } ?: emptyMap()
+                        
+                        var currentSectionPrefix: String? = null
+                        
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             items(
                                 count = pagedBlogs.itemCount,
                                 key = pagedBlogs.itemKey { it.id },
-                                contentType = pagedBlogs.itemContentType { "BlogItem" }
+                                contentType = { "BlogItem" }
                             ) { index ->
                                 val blog = pagedBlogs[index]
                                 if (blog != null) {
+                                    // Use the actual titlePrefix from the blog
+                                    // This respects the multi-character prefix depth 
+                                    // (e.g., "AA", "AB" when A has 50+ items)
+                                    val sectionPrefix = blog.titlePrefix.ifEmpty { 
+                                        blog.title.firstOrNull()?.uppercaseChar()?.toString() ?: "#" 
+                                    }
+                                    
+                                    // Show section header when prefix changes
+                                    if (sectionPrefix != currentSectionPrefix) {
+                                        currentSectionPrefix = sectionPrefix
+                                        val count = prefixCounts[sectionPrefix] ?: 0
+                                        
+                                        SectionHeader(
+                                            prefix = sectionPrefix,
+                                            count = count
+                                        )
+                                    }
+                                    
                                     BlogListItemCard(
                                         blog = blog,
                                         fontSize = fontSize,
-                                        onClick = { onBlogClick(blog.id) }
+                                        onClick = { onBlogClick(blog.id) },
+                                        onCopyClick = { copyToClipboard(blog.id, blog.title) }
                                     )
                                 }
                             }
@@ -394,11 +465,13 @@ private fun SyncStatusBar(syncState: SyncState) {
 private fun BlogListItemCard(
     blog: BlogListItem,
     fontSize: Int,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onCopyClick: () -> Unit
 ) {
     val dateFormatter = remember {
         SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
     }
+    var isCopying by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier
@@ -410,26 +483,90 @@ private fun BlogListItemCard(
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = blog.title,
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontSize = fontSize.sp
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = dateFormatter.format(Date(blog.createdAt)),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp)
-            )
+            // Blog info
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = blog.title,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = fontSize.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = dateFormatter.format(Date(blog.createdAt)),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            
+            Spacer(modifier = Modifier.width(8.dp))
+            
+            // Copy button
+            IconButton(
+                onClick = {
+                    isCopying = true
+                    onCopyClick()
+                }
+            ) {
+                if (isCopying) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                    // Reset after a short delay
+                    LaunchedEffect(Unit) {
+                        delay(1000)
+                        isCopying = false
+                    }
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = "Copy content",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
         }
     }
 }
+
+/**
+ * Section header showing a prefix and count of blogs.
+ */
+@Composable
+private fun SectionHeader(
+    prefix: String,
+    count: Int
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = prefix,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = "$count items",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+

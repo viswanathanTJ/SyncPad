@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.largeindexblog.data.entity.BlogEntity
 import com.example.largeindexblog.repository.BlogRepository
+import com.example.largeindexblog.repository.PrefixIndexRepository
+import com.example.largeindexblog.sync.SyncManager
 import com.example.largeindexblog.ui.state.UiState
 import com.example.largeindexblog.util.AppLogger
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -21,6 +23,8 @@ import javax.inject.Inject
 @HiltViewModel
 class BlogDetailViewModel @Inject constructor(
     private val blogRepository: BlogRepository,
+    private val prefixIndexRepository: PrefixIndexRepository,
+    private val syncManager: SyncManager,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -38,6 +42,9 @@ class BlogDetailViewModel @Inject constructor(
 
     private val _deleteState = MutableStateFlow<UiState<Unit>?>(null)
     val deleteState: StateFlow<UiState<Unit>?> = _deleteState.asStateFlow()
+
+    // Store the blog's prefix for reindexing after delete
+    private var blogPrefix: String? = null
 
     // Get blog ID from navigation arguments
     private val blogId: Long = savedStateHandle.get<Long>(ARG_BLOG_ID) ?: -1L
@@ -68,6 +75,7 @@ class BlogDetailViewModel @Inject constructor(
                 result.fold(
                     onSuccess = { blog ->
                         if (blog != null) {
+                            blogPrefix = blog.titlePrefix // Store for reindexing
                             _blogState.value = UiState.Success(blog)
                         } else {
                             _blogState.value = UiState.Error("Blog not found")
@@ -93,6 +101,7 @@ class BlogDetailViewModel @Inject constructor(
 
     /**
      * Delete the current blog.
+     * Also triggers reindex and sync.
      */
     fun deleteBlog() {
         viewModelScope.launch {
@@ -103,6 +112,35 @@ class BlogDetailViewModel @Inject constructor(
                 
                 result.fold(
                     onSuccess = {
+                        AppLogger.i(TAG, "Blog deleted successfully: $blogId")
+                        
+                        // Reindex the affected prefix
+                        blogPrefix?.let { prefix ->
+                            try {
+                                AppLogger.d(TAG, "Reindexing prefix: $prefix")
+                                prefixIndexRepository.partialUpdate(setOf(prefix))
+                            } catch (e: Exception) {
+                                AppLogger.e(TAG, "Error reindexing after delete", e)
+                                // Don't fail the delete operation, just log
+                            }
+                        }
+                        
+                        // Trigger sync to update cloud
+                        try {
+                            val syncResult = syncManager.performIncrementalSync()
+                            syncResult.fold(
+                                onSuccess = { result ->
+                                    AppLogger.i(TAG, "Sync after delete: ${result.toDisplayString()}")
+                                },
+                                onFailure = { e ->
+                                    AppLogger.e(TAG, "Sync failed after delete", e)
+                                    // Don't fail the delete, just log sync error
+                                }
+                            )
+                        } catch (e: Exception) {
+                            AppLogger.e(TAG, "Error syncing after delete", e)
+                        }
+                        
                         _deleteState.value = UiState.Success(Unit)
                     },
                     onFailure = { e ->

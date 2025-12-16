@@ -1,10 +1,14 @@
 package com.example.largeindexblog.sync
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import com.example.largeindexblog.BuildConfig
 import com.example.largeindexblog.repository.BlogRepository
 import com.example.largeindexblog.repository.PrefixIndexRepository
 import com.example.largeindexblog.repository.SyncRepository
 import com.example.largeindexblog.util.AppLogger
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -32,21 +36,21 @@ data class SyncResult(
 }
 
 /**
- * Sync manager for handling data synchronization.
+ * Sync manager for handling data synchronization with Supabase.
  * 
- * This is a PLACEHOLDER implementation for local-first development.
- * No real backend is required - code is structured for future integration.
+ * Uses real HTTP calls to Supabase REST API for sync.
  * 
  * Sync conditions:
  * - Incremental: created_at > last_sync_time OR updated_at > last_sync_time
- * - Hard sync: clears DB and rebuilds index
- * - last_sync_time stored locally only
+ * - Hard sync: clears DB and downloads all from server
  */
 @Singleton
 class SyncManager @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val blogRepository: BlogRepository,
     private val syncRepository: SyncRepository,
-    private val prefixIndexRepository: PrefixIndexRepository
+    private val prefixIndexRepository: PrefixIndexRepository,
+    private val supabaseApi: SupabaseApi
 ) {
     companion object {
         private const val TAG = "SyncManager"
@@ -63,9 +67,20 @@ class SyncManager @Inject constructor(
     }
 
     /**
+     * Check if network is available.
+     */
+    private fun isNetworkAvailable(): Boolean {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+               capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    /**
      * Perform an incremental sync.
      * 
-     * In a real implementation, this would:
      * 1. Get last_sync_time from local storage
      * 2. Fetch changes from server where created_at > last_sync_time OR updated_at > last_sync_time
      * 3. Apply changes to local database
@@ -79,30 +94,75 @@ class SyncManager @Inject constructor(
             try {
                 AppLogger.i(TAG, "Starting incremental sync")
                 
+                // Check network connectivity
+                if (!isNetworkAvailable()) {
+                    AppLogger.w(TAG, "No internet connection available")
+                    return@withContext Result.failure(
+                        Exception("No internet connection. Please check your network and try again.")
+                    )
+                }
+                
+                // Check if sync is configured
+                if (!isSyncConfigured()) {
+                    AppLogger.w(TAG, "Sync not configured - API key or base URL missing")
+                    return@withContext Result.failure(
+                        Exception("Sync not configured. Please add SYNC_API_KEY and SYNC_BASE_URL to local.properties")
+                    )
+                }
+                
                 // Get last sync time
                 val lastSyncTime = syncRepository.getLastSyncTime().getOrNull() ?: 0L
                 AppLogger.d(TAG, "Last sync time: $lastSyncTime")
                 
-                // Get local changes since last sync (these would be uploaded)
+                var downloadedCount = 0
+                var uploadedCount = 0
+                val affectedPrefixes = mutableSetOf<String>()
+                
+                // STEP 1: Download from server
+                val downloadResult = supabaseApi.getBlogsAfter(lastSyncTime)
+                downloadResult.fold(
+                    onSuccess = { serverBlogs ->
+                        AppLogger.d(TAG, "Received ${serverBlogs.size} blogs from server")
+                        
+                        // Convert to entities and insert into local DB
+                        val entities = serverBlogs.map { it.toBlogEntity() }
+                        if (entities.isNotEmpty()) {
+                            blogRepository.insertBlogs(entities)
+                            downloadedCount = entities.size
+                            affectedPrefixes.addAll(entities.map { it.titlePrefix })
+                        }
+                    },
+                    onFailure = { e ->
+                        AppLogger.e(TAG, "Failed to download from server", e)
+                        return@withContext Result.failure(e)
+                    }
+                )
+                
+                // STEP 2: Upload local changes to server
                 val localChanges = blogRepository.getBlogsForSync(lastSyncTime).getOrNull() ?: emptyList()
-                val uploadedCount = localChanges.size
-                AppLogger.d(TAG, "Found $uploadedCount local changes to upload")
+                if (localChanges.isNotEmpty()) {
+                    AppLogger.d(TAG, "Found ${localChanges.size} local changes to upload")
+                    
+                    val uploadDtos = localChanges.map { BlogDto.fromBlogEntity(it) }
+                    val uploadResult = supabaseApi.upsertBlogs(uploadDtos)
+                    
+                    uploadResult.fold(
+                        onSuccess = { count ->
+                            uploadedCount = count
+                            affectedPrefixes.addAll(localChanges.map { it.titlePrefix })
+                        },
+                        onFailure = { e ->
+                            AppLogger.e(TAG, "Failed to upload to server", e)
+                            // Don't fail the entire sync, just log the error
+                        }
+                    )
+                }
                 
-                // PLACEHOLDER: In a real implementation, this would:
-                // 1. Send localChanges to server
-                // 2. Receive server changes (downloadedCount)
-                // 3. Handle deletions (deletedCount)
-                
-                // Simulate receiving some downloads from server
-                val downloadedCount = 0 // Would come from server response
-                val deletedCount = 0 // Would come from server response
-                
-                // Update last sync time
+                // STEP 3: Update last sync time
                 val now = System.currentTimeMillis()
                 syncRepository.setLastSyncTime(now)
                 
-                // Update prefix index for any affected prefixes
-                val affectedPrefixes = localChanges.map { it.titlePrefix }.toSet()
+                // STEP 4: Update prefix index for affected prefixes
                 if (affectedPrefixes.isNotEmpty()) {
                     prefixIndexRepository.partialUpdate(affectedPrefixes)
                 }
@@ -110,7 +170,7 @@ class SyncManager @Inject constructor(
                 val result = SyncResult(
                     downloaded = downloadedCount,
                     uploaded = uploadedCount,
-                    deleted = deletedCount,
+                    deleted = 0,
                     isSuccess = true,
                     message = "Sync completed"
                 )
@@ -126,9 +186,8 @@ class SyncManager @Inject constructor(
     }
 
     /**
-     * Perform a hard sync (clear and rebuild).
+     * Perform a hard sync (clear local and download all from server).
      * 
-     * In a real implementation, this would:
      * 1. Clear local database
      * 2. Fetch all data from server
      * 3. Insert into local database
@@ -142,6 +201,21 @@ class SyncManager @Inject constructor(
             try {
                 AppLogger.i(TAG, "Starting hard sync")
                 
+                // Check network connectivity
+                if (!isNetworkAvailable()) {
+                    AppLogger.w(TAG, "No internet connection available")
+                    return@withContext Result.failure(
+                        Exception("No internet connection. Please check your network and try again.")
+                    )
+                }
+                
+                // Check if sync is configured
+                if (!isSyncConfigured()) {
+                    return@withContext Result.failure(
+                        Exception("Sync not configured. Please add SYNC_API_KEY and SYNC_BASE_URL to local.properties")
+                    )
+                }
+                
                 // Get count before clearing for deleted count
                 val previousCount = blogRepository.getBlogCount().getOrNull() ?: 0
                 
@@ -152,22 +226,35 @@ class SyncManager @Inject constructor(
                 
                 AppLogger.d(TAG, "Cleared local data ($previousCount items)")
                 
-                // PLACEHOLDER: In a real implementation, this would:
-                // 1. Fetch all data from server
-                // 2. Insert into local database
+                // Download all blogs from server
+                var downloadedCount = 0
+                val downloadResult = supabaseApi.getAllBlogs()
+                downloadResult.fold(
+                    onSuccess = { serverBlogs ->
+                        AppLogger.d(TAG, "Received ${serverBlogs.size} blogs from server")
+                        
+                        // Convert to entities and insert into local DB
+                        val entities = serverBlogs.map { it.toBlogEntity() }
+                        if (entities.isNotEmpty()) {
+                            blogRepository.insertBlogs(entities)
+                            downloadedCount = entities.size
+                        }
+                    },
+                    onFailure = { e ->
+                        AppLogger.e(TAG, "Failed to download from server", e)
+                        return@withContext Result.failure(e)
+                    }
+                )
                 
-                // Simulate by just setting the sync time
+                // Update last sync time
                 val now = System.currentTimeMillis()
                 syncRepository.setLastSyncTime(now)
                 
                 // Rebuild prefix index
                 prefixIndexRepository.rebuildIndex()
                 
-                // Get new count
-                val newCount = blogRepository.getBlogCount().getOrNull() ?: 0
-                
                 val result = SyncResult(
-                    downloaded = newCount,
+                    downloaded = downloadedCount,
                     uploaded = 0,
                     deleted = previousCount,
                     isSuccess = true,

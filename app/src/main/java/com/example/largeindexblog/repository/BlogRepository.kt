@@ -252,4 +252,72 @@ class BlogRepository @Inject constructor(
             }
         }
     }
+
+    // ============================================
+    // SEARCH OPERATIONS
+    // ============================================
+
+    /**
+     * Search blogs by title only (fast, title-first search).
+     */
+    suspend fun searchByTitle(query: String, limit: Int = 50): Result<List<BlogListItem>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val results = blogDao.searchByTitle("%$query%", limit)
+                AppLogger.d(TAG, "Title search '$query' found ${results.size} results")
+                Result.success(results)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error searching by title: $query", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Search blogs by title or content (advanced search).
+     */
+    suspend fun searchByTitleOrContent(query: String, limit: Int = 50): Result<List<BlogListItem>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val results = blogDao.searchByTitleOrContent("%$query%", limit)
+                AppLogger.d(TAG, "Content search '$query' found ${results.size} results")
+                Result.success(results)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error searching by title/content: $query", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Advanced search with content and date filters.
+     */
+    suspend fun advancedSearch(
+        query: String,
+        includeContent: Boolean = false,
+        createdAfter: Long = 0,
+        createdBefore: Long = 0,
+        updatedAfter: Long = 0,
+        updatedBefore: Long = 0,
+        limit: Int = 50
+    ): Result<List<BlogListItem>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val results = blogDao.advancedSearch(
+                    query = "%$query%",
+                    includeContent = if (includeContent) 1 else 0,
+                    createdAfter = createdAfter,
+                    createdBefore = createdBefore,
+                    updatedAfter = updatedAfter,
+                    updatedBefore = updatedBefore,
+                    limit = limit
+                )
+                AppLogger.d(TAG, "Advanced search '$query' found ${results.size} results")
+                Result.success(results)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error in advanced search: $query", e)
+                Result.failure(e)
+            }
+        }
+    }
 }

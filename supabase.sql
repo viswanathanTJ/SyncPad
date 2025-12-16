@@ -190,3 +190,123 @@ $$ LANGUAGE plpgsql;
 --     ('Coding Best Practices', 'Here are some coding tips...', 'sample-device'),
 --     ('Database Design Patterns', 'Understanding database normalization...', 'sample-device'),
 --     ('Effective Communication', 'Tips for better team communication...', 'sample-device');
+
+-- ============================================
+-- LARGE-SCALE SEED DATA GENERATOR
+-- ============================================
+-- This function generates random blogs for testing with 200k+ rows
+-- Each letter A-Z gets a random number of blogs (100-500 per letter)
+
+-- Function to generate random text content
+CREATE OR REPLACE FUNCTION random_content(length INTEGER DEFAULT 500)
+RETURNS TEXT AS $$
+DECLARE
+    chars TEXT[] := ARRAY['a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z',' ',' ',' '];
+    result TEXT := '';
+    i INTEGER;
+BEGIN
+    FOR i IN 1..length LOOP
+        result := result || chars[1 + floor(random() * array_length(chars, 1))::int];
+    END LOOP;
+    RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to generate random title starting with a specific letter
+CREATE OR REPLACE FUNCTION random_title(start_letter TEXT)
+RETURNS TEXT AS $$
+DECLARE
+    words TEXT[] := ARRAY[
+        'Adventure', 'Blog', 'Content', 'Discovery', 'Experience',
+        'Fortune', 'Garden', 'History', 'Insight', 'Journey',
+        'Knowledge', 'Learning', 'Mystery', 'Nature', 'Opportunity',
+        'Progress', 'Quest', 'Research', 'Science', 'Technology',
+        'Universe', 'Vision', 'Wisdom', 'Xperiment', 'Youth', 'Zenith'
+    ];
+    title TEXT;
+    suffix TEXT;
+BEGIN
+    -- Create a title starting with the specified letter
+    title := start_letter || LOWER(words[1 + floor(random() * array_length(words, 1))::int]);
+    suffix := ' ' || floor(random() * 100000)::text;
+    RETURN SUBSTRING(title || suffix FROM 1 FOR 200);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to generate large dataset with random records per letter
+CREATE OR REPLACE FUNCTION generate_seed_data(
+    min_per_letter INTEGER DEFAULT 100,
+    max_per_letter INTEGER DEFAULT 500
+)
+RETURNS TEXT AS $$
+DECLARE
+    letter CHAR;
+    num_records INTEGER;
+    total_created INTEGER := 0;
+    i INTEGER;
+    base_time BIGINT;
+BEGIN
+    -- Base timestamp (current time minus 1 year)
+    base_time := (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT - (365 * 24 * 60 * 60 * 1000);
+    
+    -- Loop through A-Z
+    FOR letter IN SELECT chr(code) FROM generate_series(65, 90) AS code LOOP
+        -- Random number of records for this letter
+        num_records := min_per_letter + floor(random() * (max_per_letter - min_per_letter))::int;
+        
+        -- Generate records for this letter
+        FOR i IN 1..num_records LOOP
+            INSERT INTO blogs (title, content, device_id, created_at, updated_at)
+            VALUES (
+                random_title(letter),
+                random_content(200 + floor(random() * 800)::int),
+                'seed-' || letter || '-' || i,
+                base_time + (random() * 31536000000)::BIGINT, -- Random time within past year
+                base_time + (random() * 31536000000)::BIGINT
+            );
+        END LOOP;
+        
+        total_created := total_created + num_records;
+        RAISE NOTICE 'Created % records for letter %', num_records, letter;
+    END LOOP;
+    
+    RETURN 'Created ' || total_created || ' seed records';
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================
+-- RUN SEED DATA GENERATION
+-- ============================================
+-- Uncomment ONE of the following to generate seed data:
+
+-- Small dataset (100-200 per letter, ~4,000 total)
+-- SELECT generate_seed_data(100, 200);
+
+-- Medium dataset (500-1000 per letter, ~20,000 total)
+-- SELECT generate_seed_data(500, 1000);
+
+-- Large dataset (5000-10000 per letter, ~200,000 total)
+-- SELECT generate_seed_data(5000, 10000);
+
+-- ============================================
+-- QUICK SEED (simple version)
+-- ============================================
+-- For quick testing, uncomment below:
+
+-- DO $$
+-- DECLARE
+--     letter CHAR;
+--     i INTEGER;
+-- BEGIN
+--     FOR letter IN SELECT chr(code) FROM generate_series(65, 90) AS code LOOP
+--         FOR i IN 1..100 LOOP
+--             INSERT INTO blogs (title, content, device_id)
+--             VALUES (
+--                 letter || 'ote ' || i || ' - Sample blog entry',
+--                 'This is the content for blog ' || letter || i || '. Lorem ipsum dolor sit amet...',
+--                 'quick-seed'
+--             );
+--         END LOOP;
+--     END LOOP;
+-- END $$;
+

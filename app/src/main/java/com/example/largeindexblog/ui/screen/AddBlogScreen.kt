@@ -1,5 +1,8 @@
 package com.example.largeindexblog.ui.screen
 
+import android.content.ClipboardManager
+import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -9,9 +12,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.largeindexblog.ui.components.ErrorDisplay
@@ -40,7 +43,14 @@ import com.example.largeindexblog.ui.state.UiState
 import com.example.largeindexblog.ui.viewmodel.AddBlogViewModel
 
 /**
+ * Maximum length for blog title.
+ */
+private const val MAX_TITLE_LENGTH = 200
+
+/**
  * Screen for adding or editing a blog post.
+ * Auto-saves on back navigation.
+ * Title is auto-populated from content.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,9 +63,11 @@ fun AddBlogScreen(
     val loadState by viewModel.loadState.collectAsState()
     
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
     
     var title by remember { mutableStateOf("") }
     var content by remember { mutableStateOf("") }
+    var hasUnsavedChanges by remember { mutableStateOf(false) }
     
     val isEditing = blogId != null && blogId > 0
 
@@ -72,6 +84,7 @@ fun AddBlogScreen(
             is UiState.Success -> {
                 title = state.data.title
                 content = state.data.content ?: ""
+                hasUnsavedChanges = false
             }
             is UiState.Error -> {
                 snackbarHostState.showSnackbar(
@@ -87,10 +100,7 @@ fun AddBlogScreen(
     LaunchedEffect(saveState) {
         when (val state = saveState) {
             is UiState.Success -> {
-                snackbarHostState.showSnackbar(
-                    message = if (isEditing) "Blog updated" else "Blog created",
-                    duration = SnackbarDuration.Short
-                )
+                hasUnsavedChanges = false
                 onNavigateBack()
             }
             is UiState.Error -> {
@@ -104,6 +114,45 @@ fun AddBlogScreen(
         }
     }
 
+    // Auto-save on back navigation
+    fun saveAndGoBack() {
+        if (hasUnsavedChanges || content.isNotBlank()) {
+            // Auto-populate title from content if empty
+            val finalTitle = if (title.isBlank() && content.isNotBlank()) {
+                generateTitleFromContent(content)
+            } else {
+                title
+            }
+            viewModel.saveBlog(finalTitle, content)
+        } else {
+            onNavigateBack()
+        }
+    }
+
+    // Handle back button
+    BackHandler {
+        saveAndGoBack()
+    }
+
+    // Paste from clipboard
+    fun pasteFromClipboard() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clipData = clipboard.primaryClip
+        if (clipData != null && clipData.itemCount > 0) {
+            val pastedText = clipData.getItemAt(0).coerceToText(context).toString()
+            
+            if (pastedText.isNotBlank()) {
+                content = pastedText
+                hasUnsavedChanges = true
+                
+                // Auto-generate title from content if title is empty
+                if (title.isBlank()) {
+                    title = generateTitleFromContent(pastedText)
+                }
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -111,10 +160,19 @@ fun AddBlogScreen(
                     Text(if (isEditing) "Edit Blog" else "Add Blog")
                 },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
+                    IconButton(onClick = { saveAndGoBack() }) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
+                            contentDescription = "Save and go back"
+                        )
+                    }
+                },
+                actions = {
+                    // Paste button
+                    IconButton(onClick = { pasteFromClipboard() }) {
+                        Icon(
+                            imageVector = Icons.Default.ContentPaste,
+                            contentDescription = "Paste from clipboard"
                         )
                     }
                 },
@@ -123,18 +181,6 @@ fun AddBlogScreen(
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             )
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = { viewModel.saveBlog(title, content) },
-                containerColor = MaterialTheme.colorScheme.primary
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = "Save",
-                    tint = MaterialTheme.colorScheme.onPrimary
-                )
-            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
@@ -169,12 +215,19 @@ fun AddBlogScreen(
                             .fillMaxSize()
                             .padding(16.dp)
                     ) {
+                        // Title field (auto-populated) with character count
                         OutlinedTextField(
                             value = title,
-                            onValueChange = { title = it },
-                            label = { Text("Title") },
-                            placeholder = { Text("Enter blog title") },
+                            onValueChange = { newTitle ->
+                                title = cleanTitle(newTitle).take(MAX_TITLE_LENGTH)
+                                hasUnsavedChanges = true
+                            },
+                            label = { Text("Title (auto-generated)") },
+                            placeholder = { Text("Will be generated from content") },
                             singleLine = true,
+                            supportingText = {
+                                Text("${title.length}/$MAX_TITLE_LENGTH")
+                            },
                             modifier = Modifier.fillMaxWidth()
                         )
 
@@ -182,9 +235,17 @@ fun AddBlogScreen(
 
                         OutlinedTextField(
                             value = content,
-                            onValueChange = { content = it },
+                            onValueChange = { newContent ->
+                                content = newContent
+                                hasUnsavedChanges = true
+                                
+                                // Always auto-update title from content
+                                if (newContent.isNotBlank()) {
+                                    title = generateTitleFromContent(newContent)
+                                }
+                            },
                             label = { Text("Content") },
-                            placeholder = { Text("Write your blog content here...") },
+                            placeholder = { Text("Start writing...") },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f),
@@ -195,4 +256,37 @@ fun AddBlogScreen(
             }
         }
     }
+}
+
+/**
+ * Generate title from content.
+ * Takes the first line or first 200 characters, removes emojis and invalid characters.
+ */
+private fun generateTitleFromContent(content: String): String {
+    val trimmedContent = content.trim()
+    
+    // Get first line or first 200 chars
+    val firstLine = trimmedContent.lines().firstOrNull()?.trim() ?: ""
+    val rawTitle = if (firstLine.length > MAX_TITLE_LENGTH) {
+        firstLine.take(MAX_TITLE_LENGTH)
+    } else if (firstLine.isBlank()) {
+        trimmedContent.take(MAX_TITLE_LENGTH)
+    } else {
+        firstLine
+    }
+    
+    return cleanTitle(rawTitle)
+}
+
+/**
+ * Clean title by removing emojis and invalid characters.
+ * Keeps letters (including Tamil/Unicode), numbers, spaces, basic punctuation.
+ */
+private fun cleanTitle(title: String): String {
+    return title
+        .replace(Regex("[\\p{So}\\p{Sk}]"), "") // Symbols, modifiers
+        .replace(Regex("[\\p{Cc}\\p{Cf}]"), "") // Control chars
+        .replace(Regex("\\s+"), " ") // Normalize whitespace
+        .trim()
+        .take(MAX_TITLE_LENGTH)
 }

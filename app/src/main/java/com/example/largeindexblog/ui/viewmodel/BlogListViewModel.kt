@@ -10,7 +10,6 @@ import com.example.largeindexblog.repository.BlogRepository
 import com.example.largeindexblog.repository.PrefixIndexRepository
 import com.example.largeindexblog.repository.SettingsRepository
 import com.example.largeindexblog.sync.SyncManager
-import com.example.largeindexblog.sync.SyncResult
 import com.example.largeindexblog.ui.state.IndexState
 import com.example.largeindexblog.ui.state.SyncState
 import com.example.largeindexblog.ui.state.UiState
@@ -23,6 +22,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -52,11 +52,21 @@ class BlogListViewModel @Inject constructor(
     val prefixFilter: StateFlow<String?> = _prefixFilter.asStateFlow()
 
     // ============================================
+    // REFRESH TRIGGER
+    // ============================================
+    
+    // Increment this to trigger a refresh of the paging data
+    private val _refreshTrigger = MutableStateFlow(0)
+
+    // ============================================
     // PAGED BLOGS
     // ============================================
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    val pagedBlogs: Flow<PagingData<BlogListItem>> = _prefixFilter
+    val pagedBlogs: Flow<PagingData<BlogListItem>> = combine(
+        _prefixFilter,
+        _refreshTrigger
+    ) { prefix, _ -> prefix }
         .flatMapLatest { prefix ->
             blogRepository.getPagedBlogs(prefix)
         }
@@ -110,6 +120,17 @@ class BlogListViewModel @Inject constructor(
             initialValue = SettingsRepository.DEFAULT_FONT_SIZE
         )
 
+    val maxDepth: StateFlow<Int> = settingsRepository.getMaxDepthFlow()
+        .catch { e ->
+            AppLogger.e(TAG, "Error in max depth flow", e)
+            emit(SettingsRepository.DEFAULT_MAX_DEPTH)
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = SettingsRepository.DEFAULT_MAX_DEPTH
+        )
+
     // ============================================
     // INDEX STATE
     // ============================================
@@ -131,6 +152,15 @@ class BlogListViewModel @Inject constructor(
     // ============================================
     // ACTIONS
     // ============================================
+
+    /**
+     * Refresh the list by triggering a new paging load.
+     */
+    fun refreshList() {
+        AppLogger.d(TAG, "Refreshing list")
+        _refreshTrigger.value = _refreshTrigger.value + 1
+        loadAlphabetIndex()
+    }
 
     /**
      * Load the alphabet index for sidebar navigation.
@@ -193,7 +223,8 @@ class BlogListViewModel @Inject constructor(
                 result.fold(
                     onSuccess = { count ->
                         _indexState.value = IndexState.Complete(count)
-                        loadAlphabetIndex() // Refresh the alphabet index
+                        // Refresh list and sidebar
+                        refreshList()
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Error rebuilding index", e)
@@ -234,12 +265,12 @@ class BlogListViewModel @Inject constructor(
                     onSuccess = { syncResult ->
                         _syncState.value = SyncState.Success(syncResult)
                         // Refresh the list after sync
-                        loadAlphabetIndex()
+                        refreshList()
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Error in sync", e)
                         _syncState.value = SyncState.Error(
-                            message = "Sync failed: ${e.message}",
+                            message = e.message ?: "Sync failed",
                             exception = e
                         )
                     }
@@ -247,7 +278,7 @@ class BlogListViewModel @Inject constructor(
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error in performSync", e)
                 _syncState.value = SyncState.Error(
-                    message = "Sync failed: ${e.message}",
+                    message = e.message ?: "Sync failed",
                     exception = e
                 )
             }
@@ -269,6 +300,19 @@ class BlogListViewModel @Inject constructor(
             prefixIndexRepository.getFirstBlogId(prefix).getOrNull()
         } catch (e: Exception) {
             AppLogger.e(TAG, "Error getting first blog id for prefix: $prefix", e)
+            null
+        }
+    }
+
+    /**
+     * Get blog content by ID for copying.
+     * Returns the full content string or null if not found.
+     */
+    suspend fun getBlogContent(blogId: Long): String? {
+        return try {
+            blogRepository.getBlogById(blogId).getOrNull()?.content
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Error getting blog content for id: $blogId", e)
             null
         }
     }
