@@ -10,6 +10,9 @@ import com.viswa2k.syncpad.repository.SyncRepository
 import com.viswa2k.syncpad.util.AppLogger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -54,6 +57,21 @@ class SyncManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SyncManager"
+    }
+
+    /**
+     * Progress updates during sync.
+     * Emits (message, count) pairs for UI display.
+     */
+    private val _syncProgress = MutableStateFlow<Pair<String, Int>?>(null)
+    val syncProgress: StateFlow<Pair<String, Int>?> = _syncProgress.asStateFlow()
+
+    private fun updateProgress(message: String, count: Int = 0) {
+        _syncProgress.value = Pair(message, count)
+    }
+    
+    private fun clearProgress() {
+        _syncProgress.value = null
     }
 
     init {
@@ -117,6 +135,10 @@ class SyncManager @Inject constructor(
                     )
                 }
                 
+                // Mark sync as in progress (for resume on interruption)
+                syncRepository.setSyncInProgress(true)
+                updateProgress("Connecting...")
+                
                 // Get last sync time
                 val lastSyncTime = syncRepository.getLastSyncTime().getOrNull() ?: 0L
                 AppLogger.i(TAG, "Last sync time: $lastSyncTime (${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(lastSyncTime))})")
@@ -129,27 +151,30 @@ class SyncManager @Inject constructor(
                 // Get existing local count for comparison
                 val localBlogCount = blogRepository.getBlogCount().getOrNull() ?: 0
                 
-                // STEP 1: Download from server
-                val downloadResult = supabaseApi.getBlogsAfter(lastSyncTime)
-                downloadResult.fold(
-                    onSuccess = { serverBlogs ->
-                        receivedFromServer = serverBlogs.size
-                        AppLogger.i(TAG, "Received $receivedFromServer blogs from server for sync")
+                // STEP 1: Download from server using streaming to avoid OOM
+                // Each blog is inserted directly to DB as it's parsed (silent = no UI refresh per item)
+                updateProgress("Downloading notes...", 0)
+                val streamResult = supabaseApi.streamBlogsAfter(lastSyncTime) { blogDto ->
+                    val entity = blogDto.toBlogEntity()
+                    blogRepository.insertBlogSilent(entity)
+                    affectedPrefixes.add(entity.titlePrefix)
+                    receivedFromServer++
+                    // Update progress every 10 items to avoid excessive updates
+                    if (receivedFromServer % 10 == 0) {
+                        updateProgress("Downloading notes...", receivedFromServer)
+                    }
+                }
+                
+                streamResult.fold(
+                    onSuccess = { count ->
+                        AppLogger.i(TAG, "Streamed $count blogs from server for sync")
                         
-                        if (serverBlogs.isNotEmpty()) {
-                            // Convert to entities and insert into local DB
-                            val entities = serverBlogs.map { it.toBlogEntity() }
-                            blogRepository.insertBlogs(entities)
-                            
-                            // Count only truly NEW items (not updates)
-                            val newBlogCount = blogRepository.getBlogCount().getOrNull() ?: 0
-                            downloadedCount = maxOf(0, newBlogCount - localBlogCount)
-                            
-                            affectedPrefixes.addAll(entities.map { it.titlePrefix })
-                        }
+                        // Count only truly NEW items (not updates)
+                        val newBlogCount = blogRepository.getBlogCount().getOrNull() ?: 0
+                        downloadedCount = maxOf(0, newBlogCount - localBlogCount)
                     },
                     onFailure = { e ->
-                        AppLogger.e(TAG, "Failed to download from server", e)
+                        AppLogger.e(TAG, "Failed to stream from server", e)
                         return@withContext Result.failure(e)
                     }
                 )
@@ -162,6 +187,7 @@ class SyncManager @Inject constructor(
                     val localChanges = blogRepository.getBlogsForSync(lastSyncTime).getOrNull() ?: emptyList()
                     if (localChanges.isNotEmpty()) {
                         AppLogger.d(TAG, "Found ${localChanges.size} local changes to upload")
+                        updateProgress("Uploading notes...", localChanges.size)
                         
                         val uploadDtos = localChanges.map { BlogDto.fromBlogEntity(it) }
                         val uploadResult = supabaseApi.upsertBlogs(uploadDtos)
@@ -185,8 +211,18 @@ class SyncManager @Inject constructor(
                 
                 // STEP 4: Update prefix index for affected prefixes
                 if (affectedPrefixes.isNotEmpty()) {
+                    updateProgress("Updating index...", affectedPrefixes.size)
                     prefixIndexRepository.partialUpdate(affectedPrefixes)
                 }
+                
+                // STEP 5: Notify data changed once (not per-blog) to refresh UI
+                if (receivedFromServer > 0) {
+                    blogRepository.notifyDataChanged()
+                }
+                
+                // STEP 6: Mark sync as complete (no longer in progress)
+                syncRepository.setSyncInProgress(false)
+                clearProgress()
                 
                 val result = SyncResult(
                     downloaded = downloadedCount,
@@ -247,22 +283,20 @@ class SyncManager @Inject constructor(
                 
                 AppLogger.d(TAG, "Cleared local data ($previousCount items)")
                 
-                // Download all blogs from server
+                // Download all blogs from server using streaming to avoid OOM
                 var downloadedCount = 0
-                val downloadResult = supabaseApi.getAllBlogs()
-                downloadResult.fold(
-                    onSuccess = { serverBlogs ->
-                        AppLogger.d(TAG, "Received ${serverBlogs.size} blogs from server")
-                        
-                        // Convert to entities and insert into local DB
-                        val entities = serverBlogs.map { it.toBlogEntity() }
-                        if (entities.isNotEmpty()) {
-                            blogRepository.insertBlogs(entities)
-                            downloadedCount = entities.size
-                        }
+                val streamResult = supabaseApi.streamAllBlogs { blogDto ->
+                    val entity = blogDto.toBlogEntity()
+                    blogRepository.insertBlogSilent(entity)
+                    downloadedCount++
+                }
+                
+                streamResult.fold(
+                    onSuccess = { count ->
+                        AppLogger.d(TAG, "Streamed $count blogs from server")
                     },
                     onFailure = { e ->
-                        AppLogger.e(TAG, "Failed to download from server", e)
+                        AppLogger.e(TAG, "Failed to stream from server", e)
                         return@withContext Result.failure(e)
                     }
                 )
@@ -273,6 +307,11 @@ class SyncManager @Inject constructor(
                 
                 // Rebuild prefix index
                 prefixIndexRepository.rebuildIndex()
+                
+                // Notify UI once after all inserts complete
+                if (downloadedCount > 0) {
+                    blogRepository.notifyDataChanged()
+                }
                 
                 val result = SyncResult(
                     downloaded = downloadedCount,
@@ -305,5 +344,13 @@ class SyncManager @Inject constructor(
      */
     fun getSyncBaseUrl(): String? {
         return BuildConfig.SYNC_BASE_URL.ifEmpty { null }
+    }
+    
+    /**
+     * Check if a sync was in progress (interrupted).
+     * Used to auto-resume on app restart.
+     */
+    suspend fun wasSyncInterrupted(): Boolean {
+        return syncRepository.isSyncInProgress().getOrNull() == true
     }
 }

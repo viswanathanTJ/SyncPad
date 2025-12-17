@@ -161,6 +161,47 @@ class SyncRepository @Inject constructor(
     }
 
     // ============================================
+    // SYNC IN PROGRESS (for resume on interruption)
+    // ============================================
+
+    /**
+     * Check if a sync was in progress (interrupted).
+     */
+    suspend fun isSyncInProgress(): Result<Boolean> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val value = syncMetaDao.getValue(SyncMetaEntity.KEY_SYNC_IN_PROGRESS)
+                Result.success(value == "true")
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting sync in progress", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Set the sync in progress flag.
+     * Set to true before sync starts, false when it completes.
+     */
+    suspend fun setSyncInProgress(inProgress: Boolean): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                syncMetaDao.upsert(
+                    SyncMetaEntity(
+                        key = SyncMetaEntity.KEY_SYNC_IN_PROGRESS,
+                        value = inProgress.toString()
+                    )
+                )
+                AppLogger.d(TAG, "Set sync in progress: $inProgress")
+                Result.success(Unit)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error setting sync in progress", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    // ============================================
     // UTILITY
     // ============================================
 

@@ -148,7 +148,7 @@ class SettingsViewModel @Inject constructor(
     fun performIncrementalSync() {
         viewModelScope.launch {
             try {
-                _syncState.value = SyncState.Syncing
+                _syncState.value = SyncState.Syncing()
                 
                 val result = syncManager.performIncrementalSync()
                 
@@ -180,7 +180,7 @@ class SettingsViewModel @Inject constructor(
     fun performHardSync() {
         viewModelScope.launch {
             try {
-                _syncState.value = SyncState.Syncing
+                _syncState.value = SyncState.Syncing()
                 
                 val result = syncManager.performHardSync()
                 

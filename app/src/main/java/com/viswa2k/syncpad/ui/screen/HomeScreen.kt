@@ -193,12 +193,27 @@ fun HomeScreen(
                     title = {
                         Column {
                             Text("SyncPad")
-                            if (prefixFilter != null) {
-                                Text(
-                                    text = "Filtered: $prefixFilter",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
+                            when {
+                                syncState is SyncState.Syncing -> {
+                                    val syncing = syncState as SyncState.Syncing
+                                    val progressText = if (syncing.count > 0) {
+                                        "${syncing.message} ${syncing.count}"
+                                    } else {
+                                        syncing.message
+                                    }
+                                    Text(
+                                        text = progressText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                                prefixFilter != null -> {
+                                    Text(
+                                        text = "Filtered: $prefixFilter",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
                             }
                         }
                     },
@@ -687,15 +702,14 @@ private fun DrillDownPopupFromHeader(
     }
     
     val currentDepth = currentPrefix.length + 1
-    // Only show items with count > 0
+    // Show actual child prefixes from the data (not just A-Z)
     val displayItems = remember(childCounts, currentPrefix) {
-        ('A'..'Z').mapNotNull { char ->
-            val nextPrefix = currentPrefix + char
-            val count = childCounts[nextPrefix] ?: 0
-            if (count > 0) {
-                Triple(nextPrefix, count, currentDepth < maxDepth)
-            } else null
-        }
+        childCounts.entries
+            .filter { it.value > 0 }
+            .sortedBy { it.key }
+            .map { (prefix, count) ->
+                Triple(prefix, count, currentDepth < maxDepth)
+            }
     }
     
     val totalWithItems = displayItems.size

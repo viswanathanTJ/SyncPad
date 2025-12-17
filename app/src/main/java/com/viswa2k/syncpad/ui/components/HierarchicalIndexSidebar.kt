@@ -181,19 +181,18 @@ private fun DrillDownPopup(
         isLoading = false
     }
     
-    // Generate display items from actual counts - ONLY show items with count > 0
+    // Generate display items from actual counts (not just A-Z) - supports Tamil, etc.
     val displayItems = remember(childCounts, parentPrefix) {
-        ('A'..'Z').mapNotNull { char ->
-            val nextPrefix = parentPrefix + char
-            val count = childCounts[nextPrefix] ?: 0
-            if (count > 0) {
+        childCounts.entries
+            .filter { it.value > 0 }
+            .sortedBy { it.key }
+            .map { (prefix, count) ->
                 DisplayItem(
-                    prefix = nextPrefix,
+                    prefix = prefix,
                     count = count,
                     hasChildren = canDrillDeeper && count > 0
                 )
-            } else null
-        }
+            }
     }
     
     val totalWithItems = displayItems.size

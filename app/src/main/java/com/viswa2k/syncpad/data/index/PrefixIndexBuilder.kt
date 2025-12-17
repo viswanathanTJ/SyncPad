@@ -97,7 +97,8 @@ class PrefixIndexBuilder @Inject constructor(
      * Performs a partial update of the prefix index after sync.
      * 
      * This is more efficient than a full rebuild when only a few
-     * blogs have been added or modified.
+     * blogs have been added or modified. For large numbers of affected
+     * prefixes, falls back to full rebuild which is faster.
      * 
      * @param affectedPrefixes Set of prefixes that were affected by the sync
      * @param maxDepth Maximum depth for prefix expansion
@@ -114,18 +115,34 @@ class PrefixIndexBuilder @Inject constructor(
                     return@withContext Result.success(0)
                 }
                 
+                // For large numbers of prefixes, full rebuild is faster
+                // (partial update is O(prefixes × depths × query) vs full rebuild O(depths × query))
+                if (affectedPrefixes.size > 100) {
+                    Log.d(TAG, "${affectedPrefixes.size} prefixes affected, switching to full rebuild")
+                    return@withContext fullRebuild(maxDepth)
+                }
+                
                 Log.d(TAG, "Starting partial prefix index update for ${affectedPrefixes.size} prefixes")
                 
                 var updatedCount = 0
                 
+                // Get unique depth prefixes to update (deduplicated)
+                val prefixesToUpdate = mutableSetOf<Pair<String, Int>>()
                 for (prefix in affectedPrefixes) {
-                    // Rebuild all depths for affected prefix
                     for (depth in 1..minOf(prefix.length, maxDepth)) {
-                        val depthPrefix = prefix.take(depth)
-                        val prefixCounts = blogDao.getPrefixCounts(depth)
-                        
-                        val matchingCount = prefixCounts.find { it.prefix == depthPrefix }
-                        
+                        prefixesToUpdate.add(Pair(prefix.take(depth), depth))
+                    }
+                }
+                
+                // Group by depth to minimize queries
+                val byDepth = prefixesToUpdate.groupBy { it.second }
+                
+                for ((depth, prefixPairs) in byDepth) {
+                    val prefixCounts = blogDao.getPrefixCounts(depth)
+                    val countsMap = prefixCounts.associateBy { it.prefix }
+                    
+                    for ((depthPrefix, _) in prefixPairs) {
+                        val matchingCount = countsMap[depthPrefix]
                         if (matchingCount != null) {
                             prefixIndexDao.insert(
                                 PrefixIndexEntity(

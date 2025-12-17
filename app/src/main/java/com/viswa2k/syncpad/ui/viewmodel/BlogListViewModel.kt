@@ -166,6 +166,18 @@ class BlogListViewModel @Inject constructor(
                 refreshList()
             }
         }
+        
+        // Observe sync progress from SyncManager
+        viewModelScope.launch {
+            syncManager.syncProgress.collect { progress ->
+                if (progress != null && _syncState.value.isSyncing) {
+                    _syncState.value = SyncState.Syncing(
+                        message = progress.first,
+                        count = progress.second
+                    )
+                }
+            }
+        }
     }
 
     // ============================================
@@ -271,8 +283,9 @@ class BlogListViewModel @Inject constructor(
     }
 
     /**
-     * Perform auto-sync only on first install (when never synced before).
-     * After first sync, user must manually trigger sync via button.
+     * Perform auto-sync on app start:
+     * - On first install (never synced before)
+     * - If a previous sync was interrupted (app closed/internet lost mid-sync)
      */
     fun performAutoSync() {
         viewModelScope.launch {
@@ -280,13 +293,22 @@ class BlogListViewModel @Inject constructor(
                 if (!isSyncConfigured()) return@launch
                 
                 val lastSyncTime = syncManager.getLastSyncTime()
+                val wasInterrupted = syncManager.wasSyncInterrupted()
                 
-                // Only auto-sync if never synced before (first install)
-                if (lastSyncTime == 0L) {
-                    AppLogger.i(TAG, "First install detected, performing initial sync")
-                    performSync(isManual = false)
-                } else {
-                    AppLogger.d(TAG, "Already synced before, skipping auto-sync")
+                when {
+                    wasInterrupted -> {
+                        // Resume interrupted sync
+                        AppLogger.i(TAG, "Previous sync was interrupted, resuming...")
+                        performSync(isManual = false)
+                    }
+                    lastSyncTime == 0L -> {
+                        // First install
+                        AppLogger.i(TAG, "First install detected, performing initial sync")
+                        performSync(isManual = false)
+                    }
+                    else -> {
+                        AppLogger.d(TAG, "Already synced before and no interruption, skipping auto-sync")
+                    }
                 }
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error in performAutoSync", e)
@@ -300,7 +322,7 @@ class BlogListViewModel @Inject constructor(
     fun performSync(isManual: Boolean = true) {
         viewModelScope.launch {
             try {
-                _syncState.value = SyncState.Syncing
+                _syncState.value = SyncState.Syncing()
                 
                 val result = syncManager.performIncrementalSync()
                 

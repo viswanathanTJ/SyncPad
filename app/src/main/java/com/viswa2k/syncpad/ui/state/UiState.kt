@@ -56,7 +56,10 @@ sealed class UiState<out T> {
  */
 sealed class SyncState {
     data object Idle : SyncState()
-    data object Syncing : SyncState()
+    data class Syncing(
+        val message: String = "Syncing...",
+        val count: Int = 0
+    ) : SyncState()
     data class Success(val result: SyncResult, val isManual: Boolean = true) : SyncState()
     data class Error(val message: String, val exception: Throwable? = null) : SyncState()
     

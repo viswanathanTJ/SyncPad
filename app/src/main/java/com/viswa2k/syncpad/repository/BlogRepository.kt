@@ -116,6 +116,31 @@ class BlogRepository @Inject constructor(
     }
 
     /**
+     * Insert a blog without emitting dataChanged event.
+     * Used during streaming sync to avoid spamming list refreshes.
+     * Call notifyDataChanged() manually after sync completes.
+     */
+    suspend fun insertBlogSilent(blog: BlogEntity): Result<Long> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val id = blogDao.insert(blog)
+                Result.success(id)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error inserting blog during sync", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Manually trigger dataChanged event.
+     * Call after batch operations that used silent methods.
+     */
+    suspend fun notifyDataChanged() {
+        _dataChanged.emit(Unit)
+    }
+
+    /**
      * Update an existing blog.
      */
     suspend fun updateBlog(blog: BlogEntity): Result<Int> {
