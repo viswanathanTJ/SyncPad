@@ -87,7 +87,10 @@ fun AppNavigation(navController: NavHostController) {
             val blogId = backStackEntry.arguments?.getLong("blogId")
             AddBlogScreen(
                 blogId = blogId,
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { 
+                    // After editing, go back to list view (skip detail page)
+                    navController.popBackStack(Routes.HOME, inclusive = false)
+                }
             )
         }
 

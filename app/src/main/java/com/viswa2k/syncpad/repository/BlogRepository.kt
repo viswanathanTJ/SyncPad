@@ -10,6 +10,9 @@ import com.viswa2k.syncpad.data.paging.BlogPagingSource
 import com.viswa2k.syncpad.util.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
@@ -29,6 +32,10 @@ class BlogRepository @Inject constructor(
         private const val TAG = "BlogRepository"
         private const val PAGE_SIZE = 50
     }
+
+    // Event bus to notify when data changes
+    private val _dataChanged = MutableSharedFlow<Unit>(replay = 0)
+    val dataChanged: SharedFlow<Unit> = _dataChanged.asSharedFlow()
 
     // ============================================
     // PAGING
@@ -99,6 +106,7 @@ class BlogRepository @Inject constructor(
             try {
                 val id = blogDao.insert(blog)
                 AppLogger.i(TAG, "Inserted blog with id: $id")
+                _dataChanged.emit(Unit)
                 Result.success(id)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error inserting blog", e)
@@ -115,6 +123,7 @@ class BlogRepository @Inject constructor(
             try {
                 val rowsUpdated = blogDao.update(blog)
                 AppLogger.i(TAG, "Updated blog id: ${blog.id}, rows: $rowsUpdated")
+                _dataChanged.emit(Unit)
                 Result.success(rowsUpdated)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error updating blog id: ${blog.id}", e)
@@ -131,6 +140,7 @@ class BlogRepository @Inject constructor(
             try {
                 val rowsDeleted = blogDao.deleteById(id)
                 AppLogger.i(TAG, "Deleted blog id: $id, rows: $rowsDeleted")
+                _dataChanged.emit(Unit)
                 Result.success(rowsDeleted)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting blog id: $id", e)
@@ -148,6 +158,7 @@ class BlogRepository @Inject constructor(
             try {
                 val rowsDeleted = blogDao.deleteAll()
                 AppLogger.i(TAG, "Deleted all blogs, rows: $rowsDeleted")
+                _dataChanged.emit(Unit)
                 Result.success(rowsDeleted)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting all blogs", e)
@@ -244,6 +255,7 @@ class BlogRepository @Inject constructor(
             try {
                 val ids = blogDao.insertAll(blogs)
                 AppLogger.i(TAG, "Inserted ${ids.size} blogs")
+                _dataChanged.emit(Unit)
                 Result.success(ids)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error inserting blogs batch", e)

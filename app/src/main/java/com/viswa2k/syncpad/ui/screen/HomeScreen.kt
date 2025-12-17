@@ -113,63 +113,15 @@ fun HomeScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     
-    // Auto-sync on first app open
+    // Auto-sync only on first install (when never synced before)
     var hasAutoSynced by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        if (!hasAutoSynced && viewModel.isSyncConfigured()) {
+        if (!hasAutoSynced) {
             hasAutoSynced = true
-            viewModel.performSync()
+            viewModel.performAutoSync()
         }
     }
     
-    // Network connectivity listener for auto-sync on internet restore
-    DisposableEffect(context) {
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-        val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) {
-                // Internet restored - trigger sync
-                scope.launch {
-                    if (viewModel.isSyncConfigured() && !syncState.isSyncing) {
-                        viewModel.performSync()
-                    }
-                }
-            }
-        }
-        
-        val request = android.net.NetworkRequest.Builder()
-            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            .build()
-        
-        try {
-            connectivityManager.registerNetworkCallback(request, networkCallback)
-        } catch (e: Exception) {
-            // Ignore if already registered or permission issues
-        }
-        
-        onDispose {
-            try {
-                connectivityManager.unregisterNetworkCallback(networkCallback)
-            } catch (e: Exception) {
-                // Ignore
-            }
-        }
-    }
-    
-    // Refresh list when screen resumes (e.g., returning from add/edit)
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshList()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-
     // Handle index state changes
     LaunchedEffect(indexState) {
         when (val state = indexState) {
@@ -191,7 +143,7 @@ fun HomeScreen(
         }
     }
 
-    // Handle sync state changes - show snackbar for errors
+    // Handle sync state changes - auto-dismiss for non-manual sync
     LaunchedEffect(syncState) {
         when (val state = syncState) {
             is SyncState.Error -> {
@@ -202,7 +154,12 @@ fun HomeScreen(
                 viewModel.resetSyncState()
             }
             is SyncState.Success -> {
-                // Don't auto-dismiss - user must manually close
+                // Auto-dismiss for automatic syncs after 3 seconds
+                if (!state.isManual) {
+                    kotlinx.coroutines.delay(3000)
+                    viewModel.resetSyncState()
+                }
+                // Manual sync stays until user closes it
             }
             else -> {}
         }

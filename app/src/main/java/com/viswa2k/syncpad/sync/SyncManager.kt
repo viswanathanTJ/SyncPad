@@ -79,6 +79,13 @@ class SyncManager @Inject constructor(
     }
 
     /**
+     * Get last sync time.
+     */
+    suspend fun getLastSyncTime(): Long {
+        return syncRepository.getLastSyncTime().getOrNull() ?: 0L
+    }
+
+    /**
      * Perform an incremental sync.
      * 
      * 1. Get last_sync_time from local storage

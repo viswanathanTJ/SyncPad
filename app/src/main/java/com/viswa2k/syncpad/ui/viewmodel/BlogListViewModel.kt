@@ -158,6 +158,14 @@ class BlogListViewModel @Inject constructor(
 
     init {
         loadAlphabetIndex()
+        
+        // Listen for data changes from other components (e.g. AddBlogViewModel, Sync)
+        viewModelScope.launch {
+            blogRepository.dataChanged.collect {
+                AppLogger.d(TAG, "Data changed event received, refreshing list")
+                refreshList()
+            }
+        }
     }
 
     // ============================================
@@ -263,9 +271,33 @@ class BlogListViewModel @Inject constructor(
     }
 
     /**
+     * Perform auto-sync only on first install (when never synced before).
+     * After first sync, user must manually trigger sync via button.
+     */
+    fun performAutoSync() {
+        viewModelScope.launch {
+            try {
+                if (!isSyncConfigured()) return@launch
+                
+                val lastSyncTime = syncManager.getLastSyncTime()
+                
+                // Only auto-sync if never synced before (first install)
+                if (lastSyncTime == 0L) {
+                    AppLogger.i(TAG, "First install detected, performing initial sync")
+                    performSync(isManual = false)
+                } else {
+                    AppLogger.d(TAG, "Already synced before, skipping auto-sync")
+                }
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error in performAutoSync", e)
+            }
+        }
+    }
+
+    /**
      * Perform sync from the home screen.
      */
-    fun performSync() {
+    fun performSync(isManual: Boolean = true) {
         viewModelScope.launch {
             try {
                 _syncState.value = SyncState.Syncing
@@ -274,7 +306,7 @@ class BlogListViewModel @Inject constructor(
                 
                 result.fold(
                     onSuccess = { syncResult ->
-                        _syncState.value = SyncState.Success(syncResult)
+                        _syncState.value = SyncState.Success(syncResult, isManual)
                         // Refresh the list after sync
                         refreshList()
                     },
