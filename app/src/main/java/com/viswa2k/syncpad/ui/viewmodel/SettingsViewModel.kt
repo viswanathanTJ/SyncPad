@@ -176,34 +176,16 @@ class SettingsViewModel @Inject constructor(
 
     /**
      * Perform hard sync (clear and rebuild).
+     * Uses launchHardSync to run in app scope so it survives navigation.
      */
     fun performHardSync() {
-        viewModelScope.launch {
-            try {
-                _syncState.value = SyncState.Syncing()
-                
-                val result = syncManager.performHardSync()
-                
-                result.fold(
-                    onSuccess = { syncResult ->
-                        _syncState.value = SyncState.Success(syncResult)
-                    },
-                    onFailure = { e ->
-                        AppLogger.e(TAG, "Error in hard sync", e)
-                        _syncState.value = SyncState.Error(
-                            message = "Hard sync failed: ${e.message}",
-                            exception = e
-                        )
-                    }
-                )
-            } catch (e: Exception) {
-                AppLogger.e(TAG, "Error in performHardSync", e)
-                _syncState.value = SyncState.Error(
-                    message = "Hard sync failed: ${e.message}",
-                    exception = e
-                )
-            }
-        }
+        // Set syncing state immediately for UI feedback
+        _syncState.value = SyncState.Syncing()
+        
+        // Launch in app scope via SyncManager (survives navigation)
+        syncManager.launchHardSync()
+        
+        // Observe lastSyncResult for completion (handled in init or LaunchedEffect in UI)
     }
 
     fun resetSyncState() {

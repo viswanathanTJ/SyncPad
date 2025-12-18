@@ -168,13 +168,47 @@ class BlogListViewModel @Inject constructor(
         }
         
         // Observe sync progress from SyncManager
+        // This handles syncs started from Settings screen or other sources
         viewModelScope.launch {
             syncManager.syncProgress.collect { progress ->
-                if (progress != null && _syncState.value.isSyncing) {
-                    _syncState.value = SyncState.Syncing(
-                        message = progress.first,
-                        count = progress.second
+                if (progress != null) {
+                    // If SyncManager is running a sync (from any source), show progress
+                    if (syncManager.isSyncCurrentlyRunning() || _syncState.value.isSyncing) {
+                        _syncState.value = SyncState.Syncing(
+                            message = progress.first,
+                            count = progress.second
+                        )
+                    }
+                } else if (syncManager.isSyncCurrentlyRunning()) {
+                    // Sync is running but no progress message yet - show default state
+                    if (!_syncState.value.isSyncing) {
+                        _syncState.value = SyncState.Syncing()
+                    }
+                }
+            }
+        }
+        
+        // Observe sync results from syncs launched via app scope (e.g., hard sync from Settings)
+        // This ensures we get the result even after navigating from Settings to Home
+        viewModelScope.launch {
+            syncManager.lastSyncResult.collect { result ->
+                if (result != null) {
+                    result.fold(
+                        onSuccess = { syncResult ->
+                            AppLogger.i(TAG, "Sync completed from app scope: ${syncResult.toDisplayString()}")
+                            _syncState.value = SyncState.Success(syncResult, isManual = true)
+                            refreshList()
+                        },
+                        onFailure = { e ->
+                            AppLogger.e(TAG, "Sync failed from app scope", e)
+                            _syncState.value = SyncState.Error(
+                                message = e.message ?: "Sync failed",
+                                exception = e
+                            )
+                        }
                     )
+                    // Clear after processing to avoid re-triggering
+                    syncManager.clearLastSyncResult()
                 }
             }
         }
@@ -304,6 +338,13 @@ class BlogListViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 if (!isSyncConfigured()) return@launch
+                
+                // Early guard: don't start auto-sync if a sync is already running
+                // (e.g., hard sync from Settings that survived navigation)
+                if (syncManager.isSyncCurrentlyRunning()) {
+                    AppLogger.d(TAG, "Sync already running, skipping auto-sync")
+                    return@launch
+                }
                 
                 val lastSyncTime = syncManager.getLastSyncTime()
                 val wasInterrupted = syncManager.wasSyncInterrupted()

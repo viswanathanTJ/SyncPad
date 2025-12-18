@@ -151,31 +151,36 @@ class SupabaseApi @Inject constructor() {
 
                     val response = client.newCall(request).execute()
 
-                    if (!response.isSuccessful) {
-                        val errorBody = response.body?.string() ?: "Unknown error"
-                        AppLogger.e(TAG, "API error: ${response.code} - $errorBody")
-                        return@withContext Result.failure(Exception("Failed to fetch blogs: ${response.code}"))
-                    }
-
-                    val body = response.body
-                    if (body == null) {
-                        hasMore = false
-                        continue
-                    }
-
-                    // Stream parse the JSON array
+                    // Track page count outside response block for hasMore check
                     var pageCount = 0
-                    body.byteStream().use { inputStream ->
-                        InputStreamReader(inputStream, Charsets.UTF_8).use { reader ->
-                            JsonReader(reader).use { jsonReader ->
-                                jsonReader.beginArray()
-                                while (jsonReader.hasNext()) {
-                                    val blog = gson.fromJson<BlogDto>(jsonReader, BlogDto::class.java)
-                                    onBlog(blog)
-                                    pageCount++
-                                    totalCount++
+                    
+                    // Use response.use{} to ensure connection is closed even on cancellation
+                    response.use { resp ->
+                        if (!resp.isSuccessful) {
+                            val errorBody = resp.body?.string() ?: "Unknown error"
+                            AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+                            return@withContext Result.failure(Exception("Failed to fetch blogs: ${resp.code}"))
+                        }
+
+                        val body = resp.body
+                        if (body == null) {
+                            hasMore = false
+                            return@use
+                        }
+
+                        // Stream parse the JSON array
+                        body.byteStream().use { inputStream ->
+                            InputStreamReader(inputStream, Charsets.UTF_8).use { reader ->
+                                JsonReader(reader).use { jsonReader ->
+                                    jsonReader.beginArray()
+                                    while (jsonReader.hasNext()) {
+                                        val blog = gson.fromJson<BlogDto>(jsonReader, BlogDto::class.java)
+                                        onBlog(blog)
+                                        pageCount++
+                                        totalCount++
+                                    }
+                                    jsonReader.endArray()
                                 }
-                                jsonReader.endArray()
                             }
                         }
                     }
@@ -300,33 +305,38 @@ class SupabaseApi @Inject constructor() {
 
                     val response = client.newCall(request).execute()
 
-                    if (!response.isSuccessful) {
-                        val errorBody = response.body?.string() ?: "Unknown error"
-                        AppLogger.e(TAG, "API error: ${response.code} - $errorBody")
-                        return@withContext Result.failure(Exception("Failed to fetch blogs: ${response.code}"))
-                    }
-
-                    val body = response.body
-                    if (body == null) {
-                        hasMore = false
-                        continue
-                    }
-
-                    // Stream parse the JSON array
+                    // Track page count and lastId outside response block
                     var pageCount = 0
                     var lastId = currentAfterId
-                    body.byteStream().use { inputStream ->
-                        InputStreamReader(inputStream, Charsets.UTF_8).use { reader ->
-                            JsonReader(reader).use { jsonReader ->
-                                jsonReader.beginArray()
-                                while (jsonReader.hasNext()) {
-                                    val blog = gson.fromJson<BlogDto>(jsonReader, BlogDto::class.java)
-                                    onBlog(blog)
-                                    pageCount++
-                                    totalCount++
-                                    blog.id?.let { lastId = it }
+                    
+                    // Use response.use{} to ensure connection is closed even on cancellation
+                    response.use { resp ->
+                        if (!resp.isSuccessful) {
+                            val errorBody = resp.body?.string() ?: "Unknown error"
+                            AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+                            return@withContext Result.failure(Exception("Failed to fetch blogs: ${resp.code}"))
+                        }
+
+                        val body = resp.body
+                        if (body == null) {
+                            hasMore = false
+                            return@use
+                        }
+
+                        // Stream parse the JSON array
+                        body.byteStream().use { inputStream ->
+                            InputStreamReader(inputStream, Charsets.UTF_8).use { reader ->
+                                JsonReader(reader).use { jsonReader ->
+                                    jsonReader.beginArray()
+                                    while (jsonReader.hasNext()) {
+                                        val blog = gson.fromJson<BlogDto>(jsonReader, BlogDto::class.java)
+                                        onBlog(blog)
+                                        pageCount++
+                                        totalCount++
+                                        blog.id?.let { lastId = it }
+                                    }
+                                    jsonReader.endArray()
                                 }
-                                jsonReader.endArray()
                             }
                         }
                     }
@@ -387,31 +397,36 @@ class SupabaseApi @Inject constructor() {
 
                     val response = client.newCall(request).execute()
 
-                    if (!response.isSuccessful) {
-                        val errorBody = response.body?.string() ?: "Unknown error"
-                        AppLogger.e(TAG, "API error: ${response.code} - $errorBody")
-                        return@withContext Result.failure(Exception("Failed to fetch blogs: ${response.code}"))
-                    }
-
-                    val body = response.body
-                    if (body == null) {
-                        hasMore = false
-                        continue
-                    }
-
-                    // Stream parse the JSON array
+                    // Track page count outside response block for hasMore check
                     var pageCount = 0
-                    body.byteStream().use { inputStream ->
-                        InputStreamReader(inputStream, Charsets.UTF_8).use { reader ->
-                            JsonReader(reader).use { jsonReader ->
-                                jsonReader.beginArray()
-                                while (jsonReader.hasNext()) {
-                                    val blog = gson.fromJson<BlogDto>(jsonReader, BlogDto::class.java)
-                                    onBlog(blog)
-                                    pageCount++
-                                    totalCount++
+                    
+                    // Use response.use{} to ensure connection is closed even on cancellation
+                    response.use { resp ->
+                        if (!resp.isSuccessful) {
+                            val errorBody = resp.body?.string() ?: "Unknown error"
+                            AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+                            return@withContext Result.failure(Exception("Failed to fetch blogs: ${resp.code}"))
+                        }
+
+                        val body = resp.body
+                        if (body == null) {
+                            hasMore = false
+                            return@use
+                        }
+
+                        // Stream parse the JSON array
+                        body.byteStream().use { inputStream ->
+                            InputStreamReader(inputStream, Charsets.UTF_8).use { reader ->
+                                JsonReader(reader).use { jsonReader ->
+                                    jsonReader.beginArray()
+                                    while (jsonReader.hasNext()) {
+                                        val blog = gson.fromJson<BlogDto>(jsonReader, BlogDto::class.java)
+                                        onBlog(blog)
+                                        pageCount++
+                                        totalCount++
+                                    }
+                                    jsonReader.endArray()
                                 }
-                                jsonReader.endArray()
                             }
                         }
                     }

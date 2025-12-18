@@ -9,10 +9,13 @@ import com.viswa2k.syncpad.repository.PrefixIndexRepository
 import com.viswa2k.syncpad.repository.SyncRepository
 import com.viswa2k.syncpad.util.AppLogger
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -60,6 +63,13 @@ class SyncManager @Inject constructor(
     }
 
     /**
+     * Application-scoped coroutine scope for sync operations.
+     * This scope survives ViewModel lifecycle changes (navigation).
+     * Uses SupervisorJob so failures don't cancel sibling jobs.
+     */
+    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
      * Runtime flag to prevent concurrent syncs.
      * Different from sync_in_progress in DB which persists across app restarts.
      */
@@ -78,6 +88,20 @@ class SyncManager @Inject constructor(
      */
     private val _syncProgress = MutableStateFlow<Pair<String, Int>?>(null)
     val syncProgress: StateFlow<Pair<String, Int>?> = _syncProgress.asStateFlow()
+    
+    /**
+     * Result of the last sync operation (for UI to query after navigation).
+     * Used by syncs launched via launchHardSync to communicate results.
+     */
+    private val _lastSyncResult = MutableStateFlow<Result<SyncResult>?>(null)
+    val lastSyncResult: StateFlow<Result<SyncResult>?> = _lastSyncResult.asStateFlow()
+    
+    /**
+     * Clear the last sync result after UI has processed it.
+     */
+    fun clearLastSyncResult() {
+        _lastSyncResult.value = null
+    }
 
     private fun updateProgress(message: String, count: Int = 0) {
         _syncProgress.value = Pair(message, count)
@@ -94,6 +118,45 @@ class SyncManager @Inject constructor(
         }
         if (BuildConfig.SYNC_BASE_URL.isEmpty()) {
             AppLogger.logSecretsMissing("SYNC_BASE_URL")
+        }
+    }
+    
+    /**
+     * Launch hard sync in application scope.
+     * This ensures the sync survives navigation (e.g., from Settings to Home).
+     * The result can be observed via lastSyncResult StateFlow.
+     * 
+     * Pre-checks isSyncRunning to prevent race conditions from launching
+     * multiple coroutines before the first one sets the flag.
+     */
+    fun launchHardSync() {
+        // Pre-check BEFORE launching coroutine to prevent race conditions
+        if (isSyncRunning) {
+            AppLogger.w(TAG, "launchHardSync: Sync already running, skipping")
+            return
+        }
+        syncScope.launch {
+            val result = performHardSync()
+            _lastSyncResult.value = result
+        }
+    }
+    
+    /**
+     * Launch incremental sync in application scope.
+     * This ensures the sync survives navigation.
+     * The result can be observed via lastSyncResult StateFlow.
+     * 
+     * Pre-checks isSyncRunning to prevent race conditions.
+     */
+    fun launchIncrementalSync() {
+        // Pre-check BEFORE launching coroutine to prevent race conditions
+        if (isSyncRunning) {
+            AppLogger.w(TAG, "launchIncrementalSync: Sync already running, skipping")
+            return
+        }
+        syncScope.launch {
+            val result = performIncrementalSync()
+            _lastSyncResult.value = result
         }
     }
 
@@ -309,7 +372,11 @@ class SyncManager @Inject constructor(
                 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error in incremental sync", e)
+                // CRITICAL: Clear both runtime flag AND persisted sync progress
+                // to prevent false "interrupted" detection on next app launch
                 isSyncRunning = false
+                syncRepository.setSyncInProgress(false)
+                clearProgress()
                 Result.failure(e)
             }
         }
@@ -329,6 +396,14 @@ class SyncManager @Inject constructor(
     suspend fun performHardSync(): Result<SyncResult> {
         return withContext(Dispatchers.IO) {
             try {
+                // Prevent concurrent syncs (runtime check)
+                if (isSyncRunning) {
+                    AppLogger.w(TAG, "Sync already running, skipping hard sync")
+                    return@withContext Result.failure(
+                        Exception("Sync already in progress")
+                    )
+                }
+                
                 AppLogger.i(TAG, "Starting hard sync")
                 
                 // Check network connectivity
@@ -346,22 +421,39 @@ class SyncManager @Inject constructor(
                     )
                 }
                 
+                // Mark sync as running (runtime flag)
+                isSyncRunning = true
+                updateProgress("Preparing hard sync...")
+                
                 // Get count before clearing for deleted count
                 val previousCount = blogRepository.getBlogCount().getOrNull() ?: 0
                 
                 // Clear local data
+                updateProgress("Clearing local data...")
                 blogRepository.deleteAllBlogs()
                 syncRepository.clearAll()
                 prefixIndexRepository.clearIndex()
                 
                 AppLogger.d(TAG, "Cleared local data ($previousCount items)")
                 
+                // Get server count for progress display
+                updateProgress("Counting records...")
+                val totalExpected = supabaseApi.getServerCount(0L).getOrNull() ?: 0
+                
                 // Download all blogs from server using streaming to avoid OOM
                 var downloadedCount = 0
+                updateProgress("Downloading notes...", 0)
+                
                 val streamResult = supabaseApi.streamAllBlogs { blogDto ->
                     val entity = blogDto.toBlogEntity()
                     blogRepository.insertBlogSilent(entity)
                     downloadedCount++
+                    
+                    // Update progress every 50 items
+                    if (downloadedCount % 50 == 0) {
+                        val percent = if (totalExpected > 0) (downloadedCount * 100 / totalExpected) else 0
+                        updateProgress("Downloading... $percent%", downloadedCount)
+                    }
                 }
                 
                 streamResult.fold(
@@ -370,6 +462,8 @@ class SyncManager @Inject constructor(
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Failed to stream from server", e)
+                        isSyncRunning = false
+                        clearProgress()
                         return@withContext Result.failure(e)
                     }
                 )
@@ -379,12 +473,17 @@ class SyncManager @Inject constructor(
                 syncRepository.setLastSyncTime(now)
                 
                 // Rebuild prefix index
+                updateProgress("Rebuilding index...")
                 prefixIndexRepository.rebuildIndex()
                 
                 // Notify UI once after all inserts complete
                 if (downloadedCount > 0) {
                     blogRepository.notifyDataChanged()
                 }
+                
+                // Clear sync running flag and progress
+                isSyncRunning = false
+                clearProgress()
                 
                 val result = SyncResult(
                     downloaded = downloadedCount,
@@ -399,6 +498,10 @@ class SyncManager @Inject constructor(
                 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error in hard sync", e)
+                // Clear both runtime flag AND persisted sync progress
+                isSyncRunning = false
+                syncRepository.setSyncInProgress(false)
+                clearProgress()
                 Result.failure(e)
             }
         }
