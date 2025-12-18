@@ -380,12 +380,12 @@ private fun DrillDownGridItem(
             // Drill deeper button
             if (hasChildren) {
                 Text(
-                    text = "▸",
-                    style = MaterialTheme.typography.titleSmall,
+                    text = "▶",
+                    style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
                         .clickable(onClick = onDrillClick)
-                        .padding(2.dp)
+                        .padding(6.dp)
                 )
             }
         }
