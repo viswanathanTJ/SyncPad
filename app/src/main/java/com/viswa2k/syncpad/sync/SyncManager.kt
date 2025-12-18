@@ -426,4 +426,66 @@ class SyncManager @Inject constructor(
     suspend fun wasSyncInterrupted(): Boolean {
         return syncRepository.isSyncInProgress().getOrNull() == true
     }
+    
+    /**
+     * Upload a single blog to the server.
+     * This is a lightweight operation for immediate sync after save.
+     * Does NOT download from server or update sync time.
+     * 
+     * @param blogId The ID of the blog to upload
+     * @return Result indicating success or failure
+     */
+    suspend fun uploadSingleBlog(blogId: Long): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Check network connectivity
+                if (!isNetworkAvailable()) {
+                    AppLogger.w(TAG, "No internet connection for single blog upload")
+                    return@withContext Result.failure(
+                        Exception("No internet connection")
+                    )
+                }
+                
+                // Check if sync is configured
+                if (!isSyncConfigured()) {
+                    AppLogger.w(TAG, "Sync not configured for single blog upload")
+                    return@withContext Result.failure(
+                        Exception("Sync not configured")
+                    )
+                }
+                
+                // Get the blog from local DB
+                val blog = blogRepository.getBlogById(blogId).getOrNull()
+                if (blog == null) {
+                    AppLogger.w(TAG, "Blog not found for upload: $blogId")
+                    return@withContext Result.failure(
+                        Exception("Blog not found")
+                    )
+                }
+                
+                AppLogger.d(TAG, "Uploading single blog: $blogId")
+                
+                // Upload to server
+                val dto = BlogDto.fromBlogEntity(blog)
+                val result = supabaseApi.upsertBlogs(listOf(dto))
+                
+                result.fold(
+                    onSuccess = { count ->
+                        AppLogger.i(TAG, "Single blog uploaded successfully: $blogId")
+                        // Update last sync time so incremental sync doesn't re-upload
+                        syncRepository.setLastSyncTime(System.currentTimeMillis())
+                    },
+                    onFailure = { e ->
+                        AppLogger.e(TAG, "Failed to upload single blog: $blogId", e)
+                    }
+                )
+                
+                result.map { }
+                
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error uploading single blog: $blogId", e)
+                Result.failure(e)
+            }
+        }
+    }
 }

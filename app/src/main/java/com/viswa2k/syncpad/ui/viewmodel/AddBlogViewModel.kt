@@ -140,7 +140,7 @@ class AddBlogViewModel @Inject constructor(
                     onSuccess = { id ->
                         AppLogger.i(TAG, "Blog saved successfully: $id")
                         
-                        // Trigger partial index update
+                        // Trigger partial index update (still blocking - fast enough)
                         try {
                             AppLogger.d(TAG, "Reindexing prefix: $titlePrefix")
                             prefixIndexRepository.partialUpdate(setOf(titlePrefix))
@@ -148,22 +148,25 @@ class AddBlogViewModel @Inject constructor(
                             AppLogger.e(TAG, "Error reindexing after save", e)
                         }
                         
-                        // Trigger sync to update cloud
-                        try {
-                            val syncResult = syncManager.performIncrementalSync()
-                            syncResult.fold(
-                                onSuccess = { result ->
-                                    AppLogger.i(TAG, "Sync after save: ${result.toDisplayString()}")
-                                },
-                                onFailure = { e ->
-                                    AppLogger.e(TAG, "Sync failed after save", e)
-                                }
-                            )
-                        } catch (e: Exception) {
-                            AppLogger.e(TAG, "Error syncing after save", e)
-                        }
-                        
+                        // Signal success immediately - user can navigate back
                         _saveState.value = UiState.Success(id)
+                        
+                        // Trigger sync in background (fire-and-forget, non-blocking)
+                        viewModelScope.launch {
+                            try {
+                                val syncResult = syncManager.uploadSingleBlog(id)
+                                syncResult.fold(
+                                    onSuccess = { 
+                                        AppLogger.i(TAG, "Background upload after save completed")
+                                    },
+                                    onFailure = { e ->
+                                        AppLogger.e(TAG, "Background upload failed after save", e)
+                                    }
+                                )
+                            } catch (e: Exception) {
+                                AppLogger.e(TAG, "Error in background sync after save", e)
+                            }
+                        }
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Error saving blog", e)
