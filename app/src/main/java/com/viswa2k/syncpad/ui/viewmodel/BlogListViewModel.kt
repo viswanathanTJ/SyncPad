@@ -322,6 +322,12 @@ class BlogListViewModel @Inject constructor(
     fun performSync(isManual: Boolean = true) {
         viewModelScope.launch {
             try {
+                // Don't update state if sync is already running
+                if (syncManager.isSyncCurrentlyRunning()) {
+                    AppLogger.d(TAG, "Sync already running, skipping")
+                    return@launch
+                }
+                
                 _syncState.value = SyncState.Syncing()
                 
                 val result = syncManager.performIncrementalSync()
@@ -333,6 +339,11 @@ class BlogListViewModel @Inject constructor(
                         refreshList()
                     },
                     onFailure = { e ->
+                        // If sync was already running, don't change state (another sync is active)
+                        if (e.message?.contains("already in progress") == true) {
+                            AppLogger.d(TAG, "Ignoring 'already in progress' error - sync is running")
+                            return@fold
+                        }
                         AppLogger.e(TAG, "Error in sync", e)
                         _syncState.value = SyncState.Error(
                             message = e.message ?: "Sync failed",

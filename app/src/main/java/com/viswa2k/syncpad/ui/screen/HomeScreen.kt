@@ -196,13 +196,8 @@ fun HomeScreen(
                             when {
                                 syncState is SyncState.Syncing -> {
                                     val syncing = syncState as SyncState.Syncing
-                                    val progressText = if (syncing.count > 0) {
-                                        "${syncing.message} ${syncing.count}"
-                                    } else {
-                                        syncing.message
-                                    }
                                     Text(
-                                        text = progressText,
+                                        text = syncing.message,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
@@ -399,10 +394,16 @@ fun HomeScreen(
                             // Show section header at top when filtered
                             if (sectionPrefix.isNotEmpty()) {
                                 item(key = "section_header_$sectionPrefix") {
-                                    // Load actual count from database
-                                    var actualCount by remember(sectionPrefix) { mutableStateOf(0) }
-                                    LaunchedEffect(sectionPrefix) {
-                                        actualCount = viewModel.getCountByPrefix(sectionPrefix)
+                                    // Use cached count from index as initial value (no flicker)
+                                    val cachedCount = (alphabetIndex as? UiState.Success)?.data
+                                        ?.find { it.prefix == sectionPrefix }?.count ?: 0
+                                    var actualCount by remember(sectionPrefix) { mutableStateOf(cachedCount) }
+                                    
+                                    // Optionally refresh from DB if needed (for deep prefixes not in index)
+                                    if (cachedCount == 0 && sectionPrefix.length > 1) {
+                                        LaunchedEffect(sectionPrefix) {
+                                            actualCount = viewModel.getCountByPrefix(sectionPrefix)
+                                        }
                                     }
                                     
                                     SectionHeader(
