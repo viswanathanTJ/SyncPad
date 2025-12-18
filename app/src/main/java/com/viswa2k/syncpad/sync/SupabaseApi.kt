@@ -133,7 +133,7 @@ class SupabaseApi @Inject constructor() {
 
                 while (hasMore) {
                     val url = "$baseUrl/rest/v1/blogs?select=*" +
-                            "&or=(created_at.gt.$afterTimestamp,updated_at.gt.$afterTimestamp)" +
+                            "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
                             "&order=id.asc" +
                             "&limit=$PAGE_SIZE" +
                             "&offset=$offset"
@@ -220,7 +220,7 @@ class SupabaseApi @Inject constructor() {
                 }
 
                 val url = "$baseUrl/rest/v1/blogs?select=id" +
-                        "&or=(created_at.gt.$afterTimestamp,updated_at.gt.$afterTimestamp)"
+                        "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)"
 
                 val request = Request.Builder()
                     .url(url)
@@ -287,7 +287,7 @@ class SupabaseApi @Inject constructor() {
                 while (hasMore) {
                     // Use keyset pagination (id > afterId) instead of offset
                     val url = "$baseUrl/rest/v1/blogs?select=*" +
-                            "&or=(created_at.gt.$afterTimestamp,updated_at.gt.$afterTimestamp)" +
+                            "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
                             "&id=gt.$currentAfterId" +
                             "&order=id.asc" +
                             "&limit=$PAGE_SIZE"
@@ -610,6 +610,119 @@ class SupabaseApi @Inject constructor() {
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error upserting blogs", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Move a blog to the recycle_bin table and delete from blogs table.
+     * This is a two-step operation:
+     * 1. Insert the blog data into recycle_bin table (with deleted_at timestamp)
+     * 2. Delete from blogs table
+     * 
+     * @param blogId The ID of the blog to move to recycle bin
+     * @return Result indicating success or failure
+     */
+    suspend fun moveToRecycleBin(blogId: Long): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val baseUrl = BuildConfig.SYNC_BASE_URL
+                val apiKey = BuildConfig.SYNC_API_KEY
+
+                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                    return@withContext Result.failure(Exception("Sync not configured"))
+                }
+
+                // Step 1: Get the blog data from server first
+                val getUrl = "$baseUrl/rest/v1/blogs?id=eq.$blogId&select=*"
+                val getRequest = Request.Builder()
+                    .url(getUrl)
+                    .addHeader("apikey", apiKey)
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .get()
+                    .build()
+
+                val getResponse = client.newCall(getRequest).execute()
+                
+                getResponse.use { resp ->
+                    if (!resp.isSuccessful) {
+                        val errorBody = resp.body?.string() ?: "Unknown error"
+                        AppLogger.e(TAG, "Failed to fetch blog for recycle: ${resp.code} - $errorBody")
+                        return@withContext Result.failure(Exception("Failed to fetch blog: ${resp.code}"))
+                    }
+
+                    val body = resp.body?.string() ?: "[]"
+                    val blogs = gson.fromJson(body, Array<BlogDto>::class.java)
+                    
+                    if (blogs.isEmpty()) {
+                        // Blog doesn't exist on server, just return success
+                        AppLogger.w(TAG, "Blog $blogId not found on server, skipping recycle bin")
+                        return@withContext Result.success(Unit)
+                    }
+
+                    val blog = blogs.first()
+
+                    // Step 2: Insert into recycle_bin table
+                    val recycleBinUrl = "$baseUrl/rest/v1/recycle_bin"
+                    val now = System.currentTimeMillis()
+                    val recycleData = mapOf(
+                        "id" to blog.id,
+                        "title" to blog.title,
+                        "content" to blog.content,
+                        "title_prefix" to blog.titlePrefix,
+                        "created_at" to blog.createdAt,
+                        "updated_at" to blog.updatedAt,
+                        "device_id" to blog.deviceId,
+                        "deleted_at" to now
+                    )
+                    val recycleJson = gson.toJson(recycleData)
+
+                    val recycleRequest = Request.Builder()
+                        .url(recycleBinUrl)
+                        .addHeader("apikey", apiKey)
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .addHeader("Prefer", "resolution=merge-duplicates")
+                        .post(recycleJson.toRequestBody(JSON_MEDIA_TYPE))
+                        .build()
+
+                    val recycleResponse = client.newCall(recycleRequest).execute()
+                    
+                    recycleResponse.use { recycleResp ->
+                        if (!recycleResp.isSuccessful) {
+                            val errorBody = recycleResp.body?.string() ?: "Unknown error"
+                            AppLogger.e(TAG, "Failed to insert into recycle_bin: ${recycleResp.code} - $errorBody")
+                            return@withContext Result.failure(Exception("Failed to move to recycle bin: ${recycleResp.code}"))
+                        }
+                    }
+
+                    // Step 3: Delete from blogs table
+                    val deleteUrl = "$baseUrl/rest/v1/blogs?id=eq.$blogId"
+                    val deleteRequest = Request.Builder()
+                        .url(deleteUrl)
+                        .addHeader("apikey", apiKey)
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .delete()
+                        .build()
+
+                    val deleteResponse = client.newCall(deleteRequest).execute()
+                    
+                    deleteResponse.use { deleteResp ->
+                        if (!deleteResp.isSuccessful) {
+                            val errorBody = deleteResp.body?.string() ?: "Unknown error"
+                            AppLogger.e(TAG, "Failed to delete blog: ${deleteResp.code} - $errorBody")
+                            return@withContext Result.failure(Exception("Failed to delete from server: ${deleteResp.code}"))
+                        }
+                    }
+
+                    AppLogger.i(TAG, "Blog $blogId moved to recycle bin successfully")
+                    Result.success(Unit)
+                }
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error moving blog to recycle bin", e)
                 Result.failure(e)
             }
         }

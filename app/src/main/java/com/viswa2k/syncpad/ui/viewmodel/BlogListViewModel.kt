@@ -159,6 +159,17 @@ class BlogListViewModel @Inject constructor(
     init {
         loadAlphabetIndex()
         
+        // Immediately check if a sync is running and set initial state
+        // This prevents showing "Idle" when ViewModel is recreated during an active sync
+        if (syncManager.isSyncCurrentlyRunning()) {
+            val currentProgress = syncManager.syncProgress.value
+            _syncState.value = if (currentProgress != null) {
+                SyncState.Syncing(message = currentProgress.first, count = currentProgress.second)
+            } else {
+                SyncState.Syncing()
+            }
+        }
+        
         // Listen for data changes from other components (e.g. AddBlogViewModel, Sync)
         viewModelScope.launch {
             blogRepository.dataChanged.collect {

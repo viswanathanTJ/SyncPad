@@ -101,20 +101,38 @@ class BlogDetailViewModel @Inject constructor(
 
     /**
      * Delete the current blog.
-     * Also triggers reindex and sync.
+     * Flow: 
+     * 1. Backup blog data
+     * 2. Delete locally + reindex (fast)
+     * 3. Navigate back
+     * 4. Try server delete in background
+     * 5. If server fails, RESTORE local data and show error
      */
     fun deleteBlog() {
         viewModelScope.launch {
             try {
                 _deleteState.value = UiState.Loading
                 
-                val result = blogRepository.deleteBlog(blogId)
+                // STEP 1: Get the blog data for backup BEFORE deleting
+                val blogResult = blogRepository.getBlogById(blogId)
+                val blogBackup = blogResult.getOrNull()
                 
-                result.fold(
+                if (blogBackup == null) {
+                    _deleteState.value = UiState.Error(
+                        message = "Blog not found",
+                        exception = null
+                    )
+                    return@launch
+                }
+                
+                // STEP 2: Delete locally FIRST (fast UI response)
+                val localResult = blogRepository.deleteBlog(blogId)
+                
+                localResult.fold(
                     onSuccess = {
-                        AppLogger.i(TAG, "Blog deleted successfully: $blogId")
+                        AppLogger.i(TAG, "Blog deleted locally: $blogId")
                         
-                        // Reindex the affected prefix BEFORE navigating (synchronously)
+                        // STEP 3: Reindex the affected prefix
                         blogPrefix?.let { prefix ->
                             try {
                                 AppLogger.d(TAG, "Reindexing prefix: $prefix")
@@ -124,15 +142,42 @@ class BlogDetailViewModel @Inject constructor(
                             }
                         }
                         
-                        // Set success so UI navigates back
+                        // STEP 4: Navigate back immediately (fast UX)
                         _deleteState.value = UiState.Success(Unit)
                         
-                        // Sync can happen in the background/next time, not blocking here
+                        // STEP 5: Try server delete in background
+                        // Use syncScope (application scope) to survive ViewModel destruction
+                        syncManager.launchServerDelete(blogId, blogBackup) { error ->
+                            // This callback is called on failure - restore local
+                            if (error != null) {
+                                viewModelScope.launch {
+                                    AppLogger.e(TAG, "Server delete failed, restoring local: $blogId", error)
+                                    
+                                    // Restore the blog locally
+                                    blogRepository.insertBlogSilent(blogBackup)
+                                    
+                                    // Reindex to restore the prefix
+                                    blogPrefix?.let { prefix ->
+                                        try {
+                                            prefixIndexRepository.partialUpdate(setOf(prefix))
+                                        } catch (e: Exception) {
+                                            AppLogger.e(TAG, "Error reindexing after restore", e)
+                                        }
+                                    }
+                                    
+                                    // Show error (won't work if user navigated away, but try anyway)
+                                    _deleteState.value = UiState.Error(
+                                        message = "Delete failed, restored: ${error.message}",
+                                        exception = error
+                                    )
+                                }
+                            }
+                        }
                     },
                     onFailure = { e ->
-                        AppLogger.e(TAG, "Error deleting blog id: $blogId", e)
+                        AppLogger.e(TAG, "Error deleting blog locally: $blogId", e)
                         _deleteState.value = UiState.Error(
-                            message = "Failed to delete blog: ${e.message}",
+                            message = "Failed to delete: ${e.message}",
                             exception = e
                         )
                     }
@@ -140,7 +185,7 @@ class BlogDetailViewModel @Inject constructor(
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error in deleteBlog", e)
                 _deleteState.value = UiState.Error(
-                    message = "Failed to delete blog: ${e.message}",
+                    message = "Failed to delete: ${e.message}",
                     exception = e
                 )
             }

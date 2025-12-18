@@ -591,4 +591,85 @@ class SyncManager @Inject constructor(
             }
         }
     }
+
+    /**
+     * Delete a blog from the server by moving it to recycle_bin.
+     * This is called when a blog is deleted locally.
+     * 
+     * @param blogId The ID of the blog to delete from server
+     * @return Result indicating success or failure
+     */
+    suspend fun deleteBlogFromServer(blogId: Long): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Check network connectivity
+                if (!isNetworkAvailable()) {
+                    AppLogger.w(TAG, "No internet connection for blog delete sync")
+                    return@withContext Result.failure(
+                        Exception("No internet connection")
+                    )
+                }
+                
+                // Check if sync is configured
+                if (!isSyncConfigured()) {
+                    AppLogger.w(TAG, "Sync not configured for blog delete")
+                    return@withContext Result.failure(
+                        Exception("Sync not configured")
+                    )
+                }
+                
+                AppLogger.d(TAG, "Deleting blog from server: $blogId")
+                
+                // Move to recycle bin on server
+                supabaseApi.moveToRecycleBin(blogId)
+                
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error deleting blog from server: $blogId", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Launch server delete in application scope.
+     * This survives ViewModel destruction (navigation).
+     * Calls onFailure callback if server delete fails, so caller can restore local data.
+     * 
+     * @param blogId The ID of the blog to delete
+     * @param blogBackup The backup data to restore on failure
+     * @param onResult Callback called with error (null if success)
+     */
+    fun launchServerDelete(
+        blogId: Long,
+        blogBackup: com.viswa2k.syncpad.data.entity.BlogEntity,
+        onResult: (Exception?) -> Unit
+    ) {
+        syncScope.launch {
+            try {
+                val result = deleteBlogFromServer(blogId)
+                
+                result.fold(
+                    onSuccess = {
+                        AppLogger.i(TAG, "Server delete completed: $blogId")
+                        // Call callback on main thread
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            onResult(null)
+                        }
+                    },
+                    onFailure = { e ->
+                        AppLogger.e(TAG, "Server delete failed, calling rollback: $blogId", e)
+                        // Call callback on main thread with error
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            onResult(e as? Exception ?: Exception(e.message))
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Exception in launchServerDelete: $blogId", e)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onResult(e)
+                }
+            }
+        }
+    }
 }
