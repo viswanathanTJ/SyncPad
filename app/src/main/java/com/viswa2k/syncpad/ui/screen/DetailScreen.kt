@@ -3,10 +3,13 @@ package com.viswa2k.syncpad.ui.screen
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -16,6 +19,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -89,10 +93,9 @@ fun DetailScreen(
     LaunchedEffect(deleteState) {
         when (val state = deleteState) {
             is UiState.Success -> {
-                snackbarHostState.showSnackbar(
-                    message = "Blog deleted",
-                    duration = SnackbarDuration.Short
-                )
+                // Reset state first to prevent re-triggering
+                viewModel.resetDeleteState()
+                // Navigate back
                 onNavigateBack()
             }
             is UiState.Error -> {
@@ -153,15 +156,9 @@ fun DetailScreen(
                 actions = {
                     if (blogState is UiState.Success) {
                         val blogId = (blogState as UiState.Success).data.id
-                        // Copy button
+                        // Copy button - no snackbar needed, Android 13+ shows system confirmation
                         IconButton(onClick = { 
                             copyToClipboard()
-                            scope.launch {
-                                snackbarHostState.showSnackbar(
-                                    message = "Copied to clipboard",
-                                    duration = SnackbarDuration.Short
-                                )
-                            }
                         }) {
                             Icon(
                                 imageVector = Icons.Default.ContentCopy,
@@ -263,6 +260,28 @@ fun DetailScreen(
                                 modifier = Modifier.padding(top = 24.dp)
                             )
                         }
+                    }
+                }
+            }
+            
+            // Loading overlay for delete operation
+            if (deleteState is UiState.Loading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Deleting...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
                     }
                 }
             }

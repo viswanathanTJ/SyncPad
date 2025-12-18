@@ -125,6 +125,7 @@ class PrefixIndexBuilder @Inject constructor(
                 Log.d(TAG, "Starting partial prefix index update for ${affectedPrefixes.size} prefixes")
                 
                 var updatedCount = 0
+                var deletedCount = 0
                 
                 // Get unique depth prefixes to update (deduplicated)
                 val prefixesToUpdate = mutableSetOf<Pair<String, Int>>()
@@ -143,7 +144,8 @@ class PrefixIndexBuilder @Inject constructor(
                     
                     for ((depthPrefix, _) in prefixPairs) {
                         val matchingCount = countsMap[depthPrefix]
-                        if (matchingCount != null) {
+                        if (matchingCount != null && matchingCount.count > 0) {
+                            // Update/insert entry with new count
                             prefixIndexDao.insert(
                                 PrefixIndexEntity(
                                     prefix = matchingCount.prefix,
@@ -153,11 +155,15 @@ class PrefixIndexBuilder @Inject constructor(
                                 )
                             )
                             updatedCount++
+                        } else {
+                            // Delete entry if count is 0 or prefix no longer exists
+                            prefixIndexDao.deleteByPrefix(depthPrefix, depth)
+                            deletedCount++
                         }
                     }
                 }
                 
-                Log.i(TAG, "Partial prefix index update complete. Updated entries: $updatedCount")
+                Log.i(TAG, "Partial prefix index update complete. Updated: $updatedCount, Deleted: $deletedCount")
                 Result.success(updatedCount)
                 
             } catch (e: Exception) {

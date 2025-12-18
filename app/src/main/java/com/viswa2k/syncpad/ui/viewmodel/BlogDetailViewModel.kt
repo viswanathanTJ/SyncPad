@@ -114,36 +114,20 @@ class BlogDetailViewModel @Inject constructor(
                     onSuccess = {
                         AppLogger.i(TAG, "Blog deleted successfully: $blogId")
                         
-                        // Set success immediately so UI navigates back
-                        _deleteState.value = UiState.Success(Unit)
-                        
-                        // Do reindex and sync in background (don't block navigation)
-                        launch {
-                            // Reindex the affected prefix
-                            blogPrefix?.let { prefix ->
-                                try {
-                                    AppLogger.d(TAG, "Reindexing prefix: $prefix")
-                                    prefixIndexRepository.partialUpdate(setOf(prefix))
-                                } catch (e: Exception) {
-                                    AppLogger.e(TAG, "Error reindexing after delete", e)
-                                }
-                            }
-                            
-                            // Trigger sync to update cloud
+                        // Reindex the affected prefix BEFORE navigating (synchronously)
+                        blogPrefix?.let { prefix ->
                             try {
-                                val syncResult = syncManager.performIncrementalSync()
-                                syncResult.fold(
-                                    onSuccess = { result ->
-                                        AppLogger.i(TAG, "Sync after delete: ${result.toDisplayString()}")
-                                    },
-                                    onFailure = { e ->
-                                        AppLogger.e(TAG, "Sync failed after delete", e)
-                                    }
-                                )
+                                AppLogger.d(TAG, "Reindexing prefix: $prefix")
+                                prefixIndexRepository.partialUpdate(setOf(prefix))
                             } catch (e: Exception) {
-                                AppLogger.e(TAG, "Error syncing after delete", e)
+                                AppLogger.e(TAG, "Error reindexing after delete", e)
                             }
                         }
+                        
+                        // Set success so UI navigates back
+                        _deleteState.value = UiState.Success(Unit)
+                        
+                        // Sync can happen in the background/next time, not blocking here
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Error deleting blog id: $blogId", e)

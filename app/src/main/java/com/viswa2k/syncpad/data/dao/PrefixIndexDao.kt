@@ -35,6 +35,9 @@ interface PrefixIndexDao {
     @Query("DELETE FROM prefix_index WHERE depth = :depth")
     suspend fun deleteByDepth(depth: Int): Int
 
+    @Query("DELETE FROM prefix_index WHERE prefix = :prefix AND depth = :depth")
+    suspend fun deleteByPrefix(prefix: String, depth: Int): Int
+
     // ============================================
     // QUERY OPERATIONS
     // ============================================

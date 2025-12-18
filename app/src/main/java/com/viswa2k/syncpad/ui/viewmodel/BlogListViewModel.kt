@@ -186,11 +186,24 @@ class BlogListViewModel @Inject constructor(
 
     /**
      * Refresh the list by triggering a new paging load.
+     * Also checks if current filter is now empty and clears it.
      */
     fun refreshList() {
         AppLogger.d(TAG, "Refreshing list")
         _refreshTrigger.value = _refreshTrigger.value + 1
         loadAlphabetIndex()
+        
+        // Check if current filter has 0 items and clear it if so
+        val currentFilter = _prefixFilter.value
+        if (currentFilter != null) {
+            viewModelScope.launch {
+                val count = blogRepository.getCountByPrefix(currentFilter).getOrNull() ?: 0
+                if (count == 0) {
+                    AppLogger.d(TAG, "Filter '$currentFilter' has 0 items, clearing filter")
+                    _prefixFilter.value = null
+                }
+            }
+        }
     }
 
     /**

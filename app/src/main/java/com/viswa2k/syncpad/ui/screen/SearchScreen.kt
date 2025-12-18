@@ -91,6 +91,7 @@ fun SearchScreen(
     val sheetState = rememberModalBottomSheetState()
 
     // Copy content to clipboard
+    // Note: Android 13+ automatically shows a visual confirmation when copying to clipboard
     fun copyToClipboard(blogId: Long, title: String) {
         scope.launch {
             val content = viewModel.getBlogContent(blogId)
@@ -103,11 +104,7 @@ fun SearchScreen(
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText("Blog Content", textToCopy)
             clipboard.setPrimaryClip(clip)
-            
-            snackbarHostState.showSnackbar(
-                message = "Copied to clipboard",
-                duration = SnackbarDuration.Short
-            )
+            // No snackbar needed - Android 13+ shows system confirmation automatically
         }
     }
 
