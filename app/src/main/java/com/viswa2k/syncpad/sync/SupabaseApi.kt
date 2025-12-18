@@ -83,7 +83,7 @@ class SupabaseApi @Inject constructor() {
     companion object {
         private const val TAG = "SupabaseApi"
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
-        private const val PAGE_SIZE = 50 // Blogs per page
+        private const val PAGE_SIZE = 500 // Blogs per page (increased from 50 for faster sync)
     }
 
     private val gson: Gson = GsonBuilder()
@@ -192,6 +192,157 @@ class SupabaseApi @Inject constructor() {
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error streaming blogs", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Get the count of blogs matching sync criteria from server.
+     * Uses Supabase count header to avoid fetching data.
+     *
+     * @param afterTimestamp Only count blogs created/updated after this timestamp
+     * @return Result with count
+     */
+    suspend fun getServerCount(afterTimestamp: Long): Result<Int> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val baseUrl = BuildConfig.SYNC_BASE_URL
+                val apiKey = BuildConfig.SYNC_API_KEY
+
+                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                    return@withContext Result.failure(Exception("Sync not configured"))
+                }
+
+                val url = "$baseUrl/rest/v1/blogs?select=id" +
+                        "&or=(created_at.gt.$afterTimestamp,updated_at.gt.$afterTimestamp)"
+
+                val request = Request.Builder()
+                    .url(url)
+                    .addHeader("apikey", apiKey)
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Prefer", "count=exact")
+                    .addHeader("Range-Unit", "items")
+                    .addHeader("Range", "0-0") // Only request 1 item to minimize data
+                    .get()
+                    .build()
+
+                AppLogger.d(TAG, "Getting server count for sync")
+
+                val response = client.newCall(request).execute()
+
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string() ?: "Unknown error"
+                    AppLogger.e(TAG, "API error: ${response.code} - $errorBody")
+                    return@withContext Result.failure(Exception("Failed to get count: ${response.code}"))
+                }
+
+                // Parse Content-Range header: "0-0/72000"
+                val contentRange = response.header("Content-Range")
+                val count = contentRange?.substringAfterLast("/")?.toIntOrNull() ?: 0
+
+                AppLogger.i(TAG, "Server count: $count blogs to sync")
+                Result.success(count)
+
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting server count", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Stream blogs from Supabase starting after a specific blog ID.
+     * Used for resume-on-kill: continues from where sync stopped.
+     *
+     * @param afterTimestamp Only fetch blogs created/updated after this timestamp
+     * @param afterId Only fetch blogs with ID greater than this (for resume)
+     * @param onBlog Callback invoked for each blog
+     * @return Result with total count of blogs processed
+     */
+    suspend fun streamBlogsAfterId(
+        afterTimestamp: Long,
+        afterId: Long,
+        onBlog: suspend (BlogDto) -> Unit
+    ): Result<Int> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val baseUrl = BuildConfig.SYNC_BASE_URL
+                val apiKey = BuildConfig.SYNC_API_KEY
+
+                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                    return@withContext Result.failure(Exception("Sync not configured"))
+                }
+
+                var totalCount = 0
+                var currentAfterId = afterId
+                var hasMore = true
+
+                while (hasMore) {
+                    // Use keyset pagination (id > afterId) instead of offset
+                    val url = "$baseUrl/rest/v1/blogs?select=*" +
+                            "&or=(created_at.gt.$afterTimestamp,updated_at.gt.$afterTimestamp)" +
+                            "&id=gt.$currentAfterId" +
+                            "&order=id.asc" +
+                            "&limit=$PAGE_SIZE"
+
+                    val request = Request.Builder()
+                        .url(url)
+                        .addHeader("apikey", apiKey)
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .addHeader("Prefer", "return=representation")
+                        .get()
+                        .build()
+
+                    AppLogger.d(TAG, "Streaming blogs after id $currentAfterId")
+
+                    val response = client.newCall(request).execute()
+
+                    if (!response.isSuccessful) {
+                        val errorBody = response.body?.string() ?: "Unknown error"
+                        AppLogger.e(TAG, "API error: ${response.code} - $errorBody")
+                        return@withContext Result.failure(Exception("Failed to fetch blogs: ${response.code}"))
+                    }
+
+                    val body = response.body
+                    if (body == null) {
+                        hasMore = false
+                        continue
+                    }
+
+                    // Stream parse the JSON array
+                    var pageCount = 0
+                    var lastId = currentAfterId
+                    body.byteStream().use { inputStream ->
+                        InputStreamReader(inputStream, Charsets.UTF_8).use { reader ->
+                            JsonReader(reader).use { jsonReader ->
+                                jsonReader.beginArray()
+                                while (jsonReader.hasNext()) {
+                                    val blog = gson.fromJson<BlogDto>(jsonReader, BlogDto::class.java)
+                                    onBlog(blog)
+                                    pageCount++
+                                    totalCount++
+                                    blog.id?.let { lastId = it }
+                                }
+                                jsonReader.endArray()
+                            }
+                        }
+                    }
+
+                    AppLogger.d(TAG, "Streamed $pageCount blogs after id, total so far: $totalCount")
+
+                    // Check if we need more pages
+                    hasMore = pageCount == PAGE_SIZE
+                    currentAfterId = lastId
+                }
+
+                AppLogger.i(TAG, "Streaming sync complete: $totalCount blogs processed (resumed from id $afterId)")
+                Result.success(totalCount)
+
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error streaming blogs after id", e)
                 Result.failure(e)
             }
         }

@@ -251,4 +251,104 @@ class SyncRepository @Inject constructor(
             }
         }
     }
+
+    // ============================================
+    // SYNC PROGRESS TRACKING (for resume on kill)
+    // ============================================
+
+    /**
+     * Get the last successfully synced blog ID.
+     * Used to resume sync from where it stopped.
+     */
+    suspend fun getSyncLastId(): Result<Long?> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val value = syncMetaDao.getValue(SyncMetaEntity.KEY_SYNC_LAST_ID)
+                Result.success(value?.toLongOrNull())
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting sync last id", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Set the last successfully synced blog ID.
+     */
+    suspend fun setSyncLastId(id: Long): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                syncMetaDao.upsert(
+                    SyncMetaEntity(
+                        key = SyncMetaEntity.KEY_SYNC_LAST_ID,
+                        value = id.toString()
+                    )
+                )
+                Result.success(Unit)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error setting sync last id", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Get the total expected count for the current sync session.
+     * Used to calculate 10% threshold for early UI notification.
+     */
+    suspend fun getSyncTotalExpected(): Result<Int?> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val value = syncMetaDao.getValue(SyncMetaEntity.KEY_SYNC_TOTAL_EXPECTED)
+                Result.success(value?.toIntOrNull())
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting sync total expected", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Set the total expected count for the current sync session.
+     */
+    suspend fun setSyncTotalExpected(count: Int): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                syncMetaDao.upsert(
+                    SyncMetaEntity(
+                        key = SyncMetaEntity.KEY_SYNC_TOTAL_EXPECTED,
+                        value = count.toString()
+                    )
+                )
+                Result.success(Unit)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error setting sync total expected", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Clear sync progress tracking data.
+     * Called on successful sync completion.
+     */
+    suspend fun clearSyncProgress(): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                syncMetaDao.delete(SyncMetaEntity.KEY_SYNC_LAST_ID)
+                syncMetaDao.delete(SyncMetaEntity.KEY_SYNC_TOTAL_EXPECTED)
+                syncMetaDao.upsert(
+                    SyncMetaEntity(
+                        key = SyncMetaEntity.KEY_SYNC_IN_PROGRESS,
+                        value = "false"
+                    )
+                )
+                AppLogger.d(TAG, "Cleared sync progress tracking data")
+                Result.success(Unit)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error clearing sync progress", e)
+                Result.failure(e)
+            }
+        }
+    }
 }

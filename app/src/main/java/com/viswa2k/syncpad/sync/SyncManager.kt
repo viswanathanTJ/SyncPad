@@ -60,6 +60,19 @@ class SyncManager @Inject constructor(
     }
 
     /**
+     * Runtime flag to prevent concurrent syncs.
+     * Different from sync_in_progress in DB which persists across app restarts.
+     */
+    @Volatile
+    private var isSyncRunning = false
+
+    /**
+     * Check if a sync is currently running (runtime check).
+     * Use this to prevent starting another sync.
+     */
+    fun isSyncCurrentlyRunning(): Boolean = isSyncRunning
+
+    /**
      * Progress updates during sync.
      * Emits (message, count) pairs for UI display.
      */
@@ -117,6 +130,14 @@ class SyncManager @Inject constructor(
     suspend fun performIncrementalSync(): Result<SyncResult> {
         return withContext(Dispatchers.IO) {
             try {
+                // Prevent concurrent syncs (runtime check)
+                if (isSyncRunning) {
+                    AppLogger.w(TAG, "Sync already running, skipping")
+                    return@withContext Result.failure(
+                        Exception("Sync already in progress")
+                    )
+                }
+                
                 AppLogger.i(TAG, "Starting incremental sync")
                 
                 // Check network connectivity
@@ -135,7 +156,10 @@ class SyncManager @Inject constructor(
                     )
                 }
                 
-                // Mark sync as in progress (for resume on interruption)
+                // Mark sync as running (runtime flag)
+                isSyncRunning = true
+                
+                // Mark sync as in progress (for resume on interruption - persisted)
                 syncRepository.setSyncInProgress(true)
                 updateProgress("Connecting...")
                 
@@ -143,25 +167,85 @@ class SyncManager @Inject constructor(
                 val lastSyncTime = syncRepository.getLastSyncTime().getOrNull() ?: 0L
                 AppLogger.i(TAG, "Last sync time: $lastSyncTime (${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(lastSyncTime))})")
                 
+                // Check if we're resuming an interrupted sync
+                val resumeFromId = syncRepository.getSyncLastId().getOrNull()
+                val isResuming = resumeFromId != null && resumeFromId > 0
+                if (isResuming) {
+                    AppLogger.i(TAG, "Resuming sync from blog ID: $resumeFromId")
+                }
+                
                 var downloadedCount = 0
                 var uploadedCount = 0
                 var receivedFromServer = 0  // Track items received from server (even if duplicates)
                 val affectedPrefixes = mutableSetOf<String>()
+                var hasNotified10Percent = false
                 
                 // Get existing local count for comparison
                 val localBlogCount = blogRepository.getBlogCount().getOrNull() ?: 0
                 
+                // Get server count first to know total expected (for 10% calculation)
+                var totalExpected = syncRepository.getSyncTotalExpected().getOrNull() ?: 0
+                if (totalExpected == 0 && !isResuming) {
+                    updateProgress("Counting records...")
+                    totalExpected = supabaseApi.getServerCount(lastSyncTime).getOrNull() ?: 0
+                    if (totalExpected > 0) {
+                        syncRepository.setSyncTotalExpected(totalExpected)
+                        AppLogger.i(TAG, "Total expected: $totalExpected blogs to sync")
+                    }
+                }
+                
+                val tenPercentThreshold = (totalExpected * 0.10).toInt()
+                
                 // STEP 1: Download from server using streaming to avoid OOM
                 // Each blog is inserted directly to DB as it's parsed (silent = no UI refresh per item)
                 updateProgress("Downloading notes...", 0)
-                val streamResult = supabaseApi.streamBlogsAfter(lastSyncTime) { blogDto ->
-                    val entity = blogDto.toBlogEntity()
-                    blogRepository.insertBlogSilent(entity)
-                    affectedPrefixes.add(entity.titlePrefix)
-                    receivedFromServer++
-                    // Update progress every 10 items to avoid excessive updates
-                    if (receivedFromServer % 10 == 0) {
-                        updateProgress("Downloading notes...", receivedFromServer)
+                
+                // Use resume-aware streaming if we're resuming
+                val streamResult = if (isResuming && resumeFromId != null) {
+                    supabaseApi.streamBlogsAfterId(lastSyncTime, resumeFromId) { blogDto ->
+                        val entity = blogDto.toBlogEntity()
+                        blogRepository.insertBlogSilent(entity)
+                        affectedPrefixes.add(entity.titlePrefix)
+                        receivedFromServer++
+                        
+                        // Track last synced ID for resume capability
+                        blogDto.id?.let { syncRepository.setSyncLastId(it) }
+                        
+                        // Update progress every 50 items (batch size is now 500)
+                        if (receivedFromServer % 50 == 0) {
+                            updateProgress("Downloading notes...", receivedFromServer)
+                        }
+                        
+                        // Notify UI at 10% threshold for early rendering
+                        if (!hasNotified10Percent && tenPercentThreshold > 0 && receivedFromServer >= tenPercentThreshold) {
+                            hasNotified10Percent = true
+                            AppLogger.i(TAG, "10% threshold reached ($receivedFromServer/$totalExpected), notifying UI")
+                            blogRepository.notifyDataChanged()
+                            prefixIndexRepository.partialUpdate(affectedPrefixes)
+                        }
+                    }
+                } else {
+                    supabaseApi.streamBlogsAfter(lastSyncTime) { blogDto ->
+                        val entity = blogDto.toBlogEntity()
+                        blogRepository.insertBlogSilent(entity)
+                        affectedPrefixes.add(entity.titlePrefix)
+                        receivedFromServer++
+                        
+                        // Track last synced ID for resume capability
+                        blogDto.id?.let { syncRepository.setSyncLastId(it) }
+                        
+                        // Update progress every 50 items (batch size is now 500)
+                        if (receivedFromServer % 50 == 0) {
+                            updateProgress("Downloading notes...", receivedFromServer)
+                        }
+                        
+                        // Notify UI at 10% threshold for early rendering
+                        if (!hasNotified10Percent && tenPercentThreshold > 0 && receivedFromServer >= tenPercentThreshold) {
+                            hasNotified10Percent = true
+                            AppLogger.i(TAG, "10% threshold reached ($receivedFromServer/$totalExpected), notifying UI")
+                            blogRepository.notifyDataChanged()
+                            prefixIndexRepository.partialUpdate(affectedPrefixes)
+                        }
                     }
                 }
                 
@@ -175,6 +259,7 @@ class SyncManager @Inject constructor(
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Failed to stream from server", e)
+                        isSyncRunning = false
                         return@withContext Result.failure(e)
                     }
                 )
@@ -209,9 +294,12 @@ class SyncManager @Inject constructor(
                 val now = System.currentTimeMillis()
                 syncRepository.setLastSyncTime(now)
                 
-                // STEP 4: Update prefix index for affected prefixes
-                if (affectedPrefixes.isNotEmpty()) {
+                // STEP 4: Update prefix index for affected prefixes (if not already done at 10%)
+                if (affectedPrefixes.isNotEmpty() && !hasNotified10Percent) {
                     updateProgress("Updating index...", affectedPrefixes.size)
+                    prefixIndexRepository.partialUpdate(affectedPrefixes)
+                } else if (affectedPrefixes.isNotEmpty()) {
+                    // Update any remaining prefixes that weren't processed at 10%
                     prefixIndexRepository.partialUpdate(affectedPrefixes)
                 }
                 
@@ -220,8 +308,9 @@ class SyncManager @Inject constructor(
                     blogRepository.notifyDataChanged()
                 }
                 
-                // STEP 6: Mark sync as complete (no longer in progress)
-                syncRepository.setSyncInProgress(false)
+                // STEP 6: Clear sync progress tracking (successful completion)
+                syncRepository.clearSyncProgress()
+                isSyncRunning = false
                 clearProgress()
                 
                 val result = SyncResult(
@@ -237,6 +326,7 @@ class SyncManager @Inject constructor(
                 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error in incremental sync", e)
+                isSyncRunning = false
                 Result.failure(e)
             }
         }

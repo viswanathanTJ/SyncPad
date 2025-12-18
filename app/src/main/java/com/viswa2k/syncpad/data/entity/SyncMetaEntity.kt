@@ -31,5 +31,7 @@ data class SyncMetaEntity(
         const val KEY_SYNC_TOKEN = "sync_token"
         const val KEY_DEVICE_ID = "device_id"
         const val KEY_SYNC_IN_PROGRESS = "sync_in_progress"
+        const val KEY_SYNC_LAST_ID = "sync_last_id"
+        const val KEY_SYNC_TOTAL_EXPECTED = "sync_total_expected"
     }
 }
