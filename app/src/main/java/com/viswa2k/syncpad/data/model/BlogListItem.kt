@@ -9,5 +9,6 @@ data class BlogListItem(
     val id: Long,
     val title: String,
     val titlePrefix: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val updatedAt: Long = 0L
 )

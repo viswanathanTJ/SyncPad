@@ -35,6 +35,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SortByAlpha
+import androidx.compose.material.icons.filled.Update
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -83,6 +85,7 @@ import com.viswa2k.syncpad.ui.state.IndexState
 import com.viswa2k.syncpad.ui.state.SyncState
 import com.viswa2k.syncpad.ui.state.UiState
 import com.viswa2k.syncpad.ui.viewmodel.BlogListViewModel
+import com.viswa2k.syncpad.data.paging.SortOrder
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -110,6 +113,9 @@ fun HomeScreen(
     val maxDepth by viewModel.maxDepth.collectAsState()
     val indexState by viewModel.indexState.collectAsState()
     val syncState by viewModel.syncState.collectAsState()
+    val sortOrder by viewModel.sortOrder.collectAsState()
+    val showSidebar by viewModel.showSidebar.collectAsState()
+    val showQuickNavFab by viewModel.showQuickNavFab.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -120,6 +126,24 @@ fun HomeScreen(
     
     // Quick navigation popup state
     var showQuickNav by remember { mutableStateOf(false) }
+    
+    // Track lifecycle to resume sync when coming back from background
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                // When app resumes (screen unlock, returning from background)
+                // Check if there's an interrupted sync to resume
+                viewModel.performAutoSync()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+    
+    // Initial sync on first composition (for first install detection)
     LaunchedEffect(Unit) {
         if (!hasAutoSynced) {
             hasAutoSynced = true
@@ -215,11 +239,23 @@ fun HomeScreen(
                         }
                     },
                     actions = {
-                        // Quick navigation button
-                        IconButton(onClick = { showQuickNav = true }) {
+                        // Quick navigation button - only show in top bar when FAB is disabled
+                        if (!showQuickNavFab) {
+                            IconButton(onClick = { showQuickNav = true }) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Quick navigation"
+                                )
+                            }
+                        }
+                        
+                        // Sort toggle button
+                        IconButton(onClick = { viewModel.toggleSortOrder() }) {
                             Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Quick navigation"
+                                imageVector = if (sortOrder == SortOrder.LATEST) 
+                                    Icons.Default.Update else Icons.Default.SortByAlpha,
+                                contentDescription = if (sortOrder == SortOrder.LATEST) 
+                                    "Sorted by latest" else "Sorted alphabetically"
                             )
                         }
                         
@@ -325,31 +361,36 @@ fun HomeScreen(
             }
         }
     ) { paddingValues ->
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Hierarchical alphabet sidebar with drill-down popups
-            when (val state = alphabetIndex) {
-                is UiState.Success -> {
-                    HierarchicalIndexSidebar(
-                        indices = state.data,
-                        maxDepth = maxDepth,
-                        onPrefixSelected = { viewModel.filterByPrefix(it) },
-                        onGetChildCounts = { parentPrefix -> 
-                            viewModel.getChildPrefixCounts(parentPrefix) 
-                        }
-                    )
-                }
-                else -> {
-                    // Show empty sidebar while loading
-                    HierarchicalIndexSidebar(
-                        indices = emptyList(),
-                        maxDepth = maxDepth,
-                        onPrefixSelected = {},
-                        onGetChildCounts = { emptyMap() }
-                    )
+            Row(
+                modifier = Modifier.fillMaxSize()
+            ) {
+            // Hierarchical alphabet sidebar with drill-down popups (conditional)
+            if (showSidebar) {
+                when (val state = alphabetIndex) {
+                    is UiState.Success -> {
+                        HierarchicalIndexSidebar(
+                            indices = state.data,
+                            maxDepth = maxDepth,
+                            onPrefixSelected = { viewModel.filterByPrefix(it) },
+                            onGetChildCounts = { parentPrefix -> 
+                                viewModel.getChildPrefixCounts(parentPrefix) 
+                            }
+                        )
+                    }
+                    else -> {
+                        // Show empty sidebar while loading
+                        HierarchicalIndexSidebar(
+                            indices = emptyList(),
+                            maxDepth = maxDepth,
+                            onPrefixSelected = {},
+                            onGetChildCounts = { emptyMap() }
+                        )
+                    }
                 }
             }
 
@@ -515,15 +556,39 @@ fun HomeScreen(
                     }
                 }
             }
-        }
-    }
+            } // end Row
+            
+            // Quick navigation FAB on bottom left (when enabled in settings)
+            if (showQuickNavFab) {
+                FloatingActionButton(
+                    onClick = { showQuickNav = true },
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(16.dp)
+                        .size(56.dp),
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "Quick navigation",
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
+        } // end Box
+    } // end Scaffold
     
     // Quick navigation popup
     if (showQuickNav) {
         val indices = (alphabetIndex as? UiState.Success)?.data ?: emptyList()
         QuickNavigationPopup(
             indices = indices,
+            maxDepth = maxDepth,
             onPrefixSelected = { viewModel.filterByPrefix(it) },
+            onGetChildCounts = { parentPrefix -> 
+                viewModel.getChildPrefixCounts(parentPrefix) 
+            },
             onDismiss = { showQuickNav = false }
         )
     }

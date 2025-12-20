@@ -8,6 +8,9 @@ import com.google.gson.GsonBuilder
 import com.google.gson.annotations.SerializedName
 import com.google.gson.stream.JsonReader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import java.net.SocketException
+import java.net.UnknownHostException
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -83,6 +86,12 @@ data class BlogDto(
  * Simple DTO for parsing deleted blog IDs from recycle_bin table.
  */
 private data class DeletedIdDto(val id: Long? = null)
+
+/**
+ * Exception thrown when network connectivity is lost during sync.
+ * This is a recoverable error - sync can resume when connection is restored.
+ */
+class NetworkInterruptedException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
  * Supabase REST API client for blog sync.
@@ -208,7 +217,19 @@ class SupabaseApi @Inject constructor() {
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error streaming blogs", e)
-                Result.failure(e)
+                // Wrap network connectivity errors with user-friendly message
+                // Check both direct exceptions and wrapped ones (e.g., SocketException wrapped in JsonSyntaxException)
+                val isNetworkError = e is UnknownHostException || e is SocketException ||
+                    e.cause is UnknownHostException || e.cause is SocketException ||
+                    e.cause?.cause is SocketException
+                
+                val wrappedException = if (isNetworkError) {
+                    AppLogger.w(TAG, "Network connectivity lost during sync")
+                    NetworkInterruptedException("Network connection lost. Sync will resume when connection is restored.", e)
+                } else {
+                    e
+                }
+                Result.failure(wrappedException)
             }
         }
     }
@@ -430,7 +451,19 @@ class SupabaseApi @Inject constructor() {
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error streaming blogs after id", e)
-                Result.failure(e)
+                // Wrap network connectivity errors with user-friendly message
+                // Check both direct exceptions and wrapped ones (e.g., SocketException wrapped in JsonSyntaxException)
+                val isNetworkError = e is UnknownHostException || e is SocketException ||
+                    e.cause is UnknownHostException || e.cause is SocketException ||
+                    e.cause?.cause is SocketException
+                
+                val wrappedException = if (isNetworkError) {
+                    AppLogger.w(TAG, "Network connectivity lost during sync")
+                    NetworkInterruptedException("Network connection lost. Sync will resume when connection is restored.", e)
+                } else {
+                    e
+                }
+                Result.failure(wrappedException)
             }
         }
     }
@@ -519,7 +552,19 @@ class SupabaseApi @Inject constructor() {
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error streaming all blogs", e)
-                Result.failure(e)
+                // Wrap network connectivity errors with user-friendly message
+                // Check both direct exceptions and wrapped ones (e.g., SocketException wrapped in JsonSyntaxException)
+                val isNetworkError = e is UnknownHostException || e is SocketException ||
+                    e.cause is UnknownHostException || e.cause is SocketException ||
+                    e.cause?.cause is SocketException
+                
+                val wrappedException = if (isNetworkError) {
+                    AppLogger.w(TAG, "Network connectivity lost during sync")
+                    NetworkInterruptedException("Network connection lost. Sync will resume when connection is restored.", e)
+                } else {
+                    e
+                }
+                Result.failure(wrappedException)
             }
         }
     }

@@ -1,5 +1,7 @@
 package com.viswa2k.syncpad.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,11 +18,16 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -33,17 +40,23 @@ import com.viswa2k.syncpad.data.entity.PrefixIndexEntity
 /**
  * Quick navigation popup with large, easy-to-tap letter grid.
  * Opens centered on screen for easier navigation than small sidebar icons.
+ * Long press on letters with > 50 items opens drill-down popup.
  */
 @Composable
 fun QuickNavigationPopup(
     indices: List<PrefixIndexEntity>,
+    maxDepth: Int = 3,
     onPrefixSelected: (String) -> Unit,
+    onGetChildCounts: suspend (String) -> Map<String, Int> = { emptyMap() },
     onDismiss: () -> Unit
 ) {
     // Get depth=1 prefixes (single letters) for quick navigation
     val level1Prefixes = remember(indices) {
         indices.filter { it.depth == 1 }.sortedBy { it.prefix }
     }
+    
+    // State for drill-down popup
+    var drillDownPrefix by remember { mutableStateOf<String?>(null) }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -113,9 +126,18 @@ fun QuickNavigationPopup(
                             QuickNavGridItem(
                                 prefix = indexEntry.prefix,
                                 count = indexEntry.count,
+                                canDrillDown = indexEntry.count > 50 && maxDepth > 1,
                                 onClick = {
                                     onPrefixSelected(indexEntry.prefix)
                                     onDismiss()
+                                },
+                                onLongClick = {
+                                    if (indexEntry.count > 50 && maxDepth > 1) {
+                                        drillDownPrefix = indexEntry.prefix
+                                    } else {
+                                        onPrefixSelected(indexEntry.prefix)
+                                        onDismiss()
+                                    }
                                 }
                             )
                         }
@@ -125,7 +147,7 @@ fun QuickNavigationPopup(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Text(
-                    text = "Tap a letter to jump to that section",
+                    text = "Tap to jump • Long press to drill down",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
@@ -133,21 +155,45 @@ fun QuickNavigationPopup(
             }
         }
     }
+    
+    // Drill-down popup - uses the same shared component as the sidebar
+    drillDownPrefix?.let { prefix ->
+        DrillDownPopup(
+            parentPrefix = prefix,
+            maxDepth = maxDepth,
+            onGetChildCounts = onGetChildCounts,
+            onPrefixSelected = { selectedPrefix ->
+                onPrefixSelected(selectedPrefix)
+                drillDownPrefix = null
+                onDismiss()
+            },
+            onDismiss = { drillDownPrefix = null },
+            onDrillDeeper = { newPrefix ->
+                drillDownPrefix = newPrefix
+            }
+        )
+    }
 }
 
 /**
- * Large grid item for quick navigation.
+ * Large grid item for quick navigation initial letter selection.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QuickNavGridItem(
     prefix: String,
     count: Int,
-    onClick: () -> Unit
+    canDrillDown: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = onClick
 ) {
     Surface(
         modifier = Modifier
             .size(56.dp)
-            .clickable(onClick = onClick),
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.primaryContainer
     ) {
@@ -169,7 +215,10 @@ private fun QuickNavGridItem(
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontSize = 10.sp
                 ),
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                color = if (canDrillDown) 
+                    MaterialTheme.colorScheme.primary 
+                else 
+                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
             )
         }
     }

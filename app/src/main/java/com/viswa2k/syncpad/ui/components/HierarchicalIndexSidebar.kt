@@ -157,9 +157,10 @@ private fun HierarchicalIndexItem(
 /**
  * Popup dialog for drill-down navigation.
  * Dynamically loads real counts from database.
+ * Shared component used by both HierarchicalIndexSidebar and QuickNavigationPopup.
  */
 @Composable
-private fun DrillDownPopup(
+internal fun DrillDownPopup(
     parentPrefix: String,
     maxDepth: Int,
     onGetChildCounts: suspend (String) -> Map<String, Int>,
@@ -187,7 +188,7 @@ private fun DrillDownPopup(
             .filter { it.value > 0 }
             .sortedBy { it.key }
             .map { (prefix, count) ->
-                DisplayItem(
+                DrillDownDisplayItem(
                     prefix = prefix,
                     count = count,
                     hasChildren = canDrillDeeper && count > 0
@@ -316,7 +317,7 @@ private fun DrillDownPopup(
 /**
  * Data class for popup display items.
  */
-private data class DisplayItem(
+internal data class DrillDownDisplayItem(
     val prefix: String,
     val count: Int,
     val hasChildren: Boolean
@@ -326,7 +327,7 @@ private data class DisplayItem(
  * Grid item in the drill-down popup.
  */
 @Composable
-private fun DrillDownGridItem(
+internal fun DrillDownGridItem(
     displayPrefix: String,
     fullPrefix: String,
     count: Int,

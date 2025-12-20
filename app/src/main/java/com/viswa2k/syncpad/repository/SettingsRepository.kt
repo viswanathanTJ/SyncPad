@@ -35,12 +35,16 @@ class SettingsRepository @Inject constructor(
         private val KEY_FONT_SIZE = intPreferencesKey("font_size")
         private val KEY_MAX_DEPTH = intPreferencesKey("max_depth")
         private val KEY_SHOW_BOTTOM_INDEX = booleanPreferencesKey("show_bottom_index")
+        private val KEY_SHOW_SIDEBAR = booleanPreferencesKey("show_sidebar")
+        private val KEY_SHOW_QUICK_NAV_FAB = booleanPreferencesKey("show_quick_nav_fab")
 
         // Default values
         const val DEFAULT_THEME = "system"
         const val DEFAULT_FONT_SIZE = 18
         val DEFAULT_MAX_DEPTH = PrefixIndexBuilder.DEFAULT_MAX_DEPTH
         const val DEFAULT_SHOW_BOTTOM_INDEX = false
+        const val DEFAULT_SHOW_SIDEBAR = true
+        const val DEFAULT_SHOW_QUICK_NAV_FAB = true
 
         // Theme options
         const val THEME_LIGHT = "light"
@@ -191,6 +195,74 @@ class SettingsRepository @Inject constructor(
     }
 
     // ============================================
+    // SIDEBAR VISIBILITY
+    // ============================================
+
+    /**
+     * Get whether to show sidebar.
+     */
+    fun getShowSidebarFlow(): Flow<Boolean> {
+        return context.dataStore.data
+            .map { preferences ->
+                preferences[KEY_SHOW_SIDEBAR] ?: DEFAULT_SHOW_SIDEBAR
+            }
+            .catch { e ->
+                AppLogger.e(TAG, "Error reading sidebar preference", e)
+                emit(DEFAULT_SHOW_SIDEBAR)
+            }
+    }
+
+    /**
+     * Set whether to show sidebar.
+     */
+    suspend fun setShowSidebar(show: Boolean): Result<Unit> {
+        return try {
+            context.dataStore.edit { preferences ->
+                preferences[KEY_SHOW_SIDEBAR] = show
+            }
+            AppLogger.i(TAG, "Set show sidebar to: $show")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Error setting sidebar preference", e)
+            Result.failure(e)
+        }
+    }
+
+    // ============================================
+    // QUICK NAV FAB
+    // ============================================
+
+    /**
+     * Get whether to show quick navigation FAB.
+     */
+    fun getShowQuickNavFabFlow(): Flow<Boolean> {
+        return context.dataStore.data
+            .map { preferences ->
+                preferences[KEY_SHOW_QUICK_NAV_FAB] ?: DEFAULT_SHOW_QUICK_NAV_FAB
+            }
+            .catch { e ->
+                AppLogger.e(TAG, "Error reading quick nav FAB preference", e)
+                emit(DEFAULT_SHOW_QUICK_NAV_FAB)
+            }
+    }
+
+    /**
+     * Set whether to show quick navigation FAB.
+     */
+    suspend fun setShowQuickNavFab(show: Boolean): Result<Unit> {
+        return try {
+            context.dataStore.edit { preferences ->
+                preferences[KEY_SHOW_QUICK_NAV_FAB] = show
+            }
+            AppLogger.i(TAG, "Set show quick nav FAB to: $show")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Error setting quick nav FAB preference", e)
+            Result.failure(e)
+        }
+    }
+
+    // ============================================
     // ALL SETTINGS
     // ============================================
 
@@ -201,7 +273,9 @@ class SettingsRepository @Inject constructor(
         val theme: String = DEFAULT_THEME,
         val fontSize: Int = DEFAULT_FONT_SIZE,
         val maxDepth: Int = DEFAULT_MAX_DEPTH,
-        val showBottomIndex: Boolean = DEFAULT_SHOW_BOTTOM_INDEX
+        val showBottomIndex: Boolean = DEFAULT_SHOW_BOTTOM_INDEX,
+        val showSidebar: Boolean = DEFAULT_SHOW_SIDEBAR,
+        val showQuickNavFab: Boolean = DEFAULT_SHOW_QUICK_NAV_FAB
     )
 
     /**
@@ -214,7 +288,9 @@ class SettingsRepository @Inject constructor(
                     theme = preferences[KEY_THEME] ?: DEFAULT_THEME,
                     fontSize = preferences[KEY_FONT_SIZE] ?: DEFAULT_FONT_SIZE,
                     maxDepth = preferences[KEY_MAX_DEPTH] ?: DEFAULT_MAX_DEPTH,
-                    showBottomIndex = preferences[KEY_SHOW_BOTTOM_INDEX] ?: DEFAULT_SHOW_BOTTOM_INDEX
+                    showBottomIndex = preferences[KEY_SHOW_BOTTOM_INDEX] ?: DEFAULT_SHOW_BOTTOM_INDEX,
+                    showSidebar = preferences[KEY_SHOW_SIDEBAR] ?: DEFAULT_SHOW_SIDEBAR,
+                    showQuickNavFab = preferences[KEY_SHOW_QUICK_NAV_FAB] ?: DEFAULT_SHOW_QUICK_NAV_FAB
                 )
             }
             .catch { e ->

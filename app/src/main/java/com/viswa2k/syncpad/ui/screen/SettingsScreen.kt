@@ -182,6 +182,61 @@ fun SettingsScreen(
                 }
             }
 
+            // Navigation Section
+            SettingsSection(title = "Navigation") {
+                // Show Sidebar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Show Sidebar",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Display alphabet index sidebar",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = settings.showSidebar,
+                        onCheckedChange = { viewModel.setShowSidebar(it) }
+                    )
+                }
+
+                HorizontalDivider()
+
+                // Show Quick Nav FAB
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Quick Navigation FAB",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Show floating button for quick jump",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = settings.showQuickNavFab,
+                        onCheckedChange = { viewModel.setShowQuickNavFab(it) }
+                    )
+                }
+            }
+
             // Index Section
             SettingsSection(title = "Index") {
                 // MAX_DEPTH

@@ -7,16 +7,25 @@ import com.viswa2k.syncpad.data.dao.BlogDao
 import com.viswa2k.syncpad.data.model.BlogListItem
 
 /**
+ * Sort order for blog list.
+ */
+enum class SortOrder {
+    ALPHABETICAL,
+    LATEST
+}
+
+/**
  * Cursor-based PagingSource for blogs.
  * 
  * IMPORTANT:
  * - NEVER uses OFFSET for stable paging at 200k+ rows
  * - Only loads id, title, created_at (NEVER content)
- * - Uses (title_prefix, title, id) as cursor for stable ordering
+ * - Uses appropriate cursor for sort order
  */
 class BlogPagingSource(
     private val blogDao: BlogDao,
-    private val prefixFilter: String? = null
+    private val prefixFilter: String? = null,
+    private val sortOrder: SortOrder = SortOrder.ALPHABETICAL
 ) : PagingSource<BlogCursor, BlogListItem>() {
 
     companion object {
@@ -30,7 +39,8 @@ class BlogPagingSource(
                 BlogCursor(
                     titlePrefix = item.title.take(10).uppercase(),
                     title = item.title,
-                    id = item.id
+                    id = item.id,
+                    updatedAt = item.updatedAt
                 )
             }
         }
@@ -41,21 +51,45 @@ class BlogPagingSource(
             val cursor = params.key
             val pageSize = params.loadSize.coerceAtMost(PAGE_SIZE)
 
-            val items = if (cursor == null) {
-                // First page
-                if (prefixFilter != null) {
-                    blogDao.getByPrefixPattern("$prefixFilter%", pageSize)
-                } else {
-                    blogDao.getFirstPage(pageSize)
+            val items = when {
+                // Prefix filter always uses alphabetical
+                prefixFilter != null -> {
+                    if (cursor == null) {
+                        blogDao.getByPrefixPattern("$prefixFilter%", pageSize)
+                    } else {
+                        blogDao.getNextPage(
+                            cursorPrefix = cursor.titlePrefix,
+                            cursorTitle = cursor.title,
+                            cursorId = cursor.id,
+                            pageSize = pageSize
+                        )
+                    }
                 }
-            } else {
-                // Subsequent pages using cursor
-                blogDao.getNextPage(
-                    cursorPrefix = cursor.titlePrefix,
-                    cursorTitle = cursor.title,
-                    cursorId = cursor.id,
-                    pageSize = pageSize
-                )
+                // Sort by latest
+                sortOrder == SortOrder.LATEST -> {
+                    if (cursor == null) {
+                        blogDao.getFirstPageByLatest(pageSize)
+                    } else {
+                        blogDao.getNextPageByLatest(
+                            cursorUpdatedAt = cursor.updatedAt,
+                            cursorId = cursor.id,
+                            pageSize = pageSize
+                        )
+                    }
+                }
+                // Default: alphabetical
+                else -> {
+                    if (cursor == null) {
+                        blogDao.getFirstPage(pageSize)
+                    } else {
+                        blogDao.getNextPage(
+                            cursorPrefix = cursor.titlePrefix,
+                            cursorTitle = cursor.title,
+                            cursorId = cursor.id,
+                            pageSize = pageSize
+                        )
+                    }
+                }
             }
 
             val nextCursor = if (items.size < pageSize) {
@@ -65,7 +99,8 @@ class BlogPagingSource(
                     BlogCursor(
                         titlePrefix = lastItem.title.take(10).uppercase(),
                         title = lastItem.title,
-                        id = lastItem.id
+                        id = lastItem.id,
+                        updatedAt = lastItem.updatedAt
                     )
                 }
             }
@@ -84,10 +119,11 @@ class BlogPagingSource(
 
 /**
  * Cursor for stable pagination.
- * Uses (title_prefix, title, id) to ensure consistent ordering.
+ * Includes all fields needed for both sort orders.
  */
 data class BlogCursor(
     val titlePrefix: String,
     val title: String,
-    val id: Long
+    val id: Long,
+    val updatedAt: Long = 0L
 )

@@ -96,7 +96,7 @@ interface BlogDao {
      * Uses cursor-based pagination for stability at 200k+ rows.
      */
     @Query("""
-        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt, updated_at as updatedAt
         FROM blogs
         WHERE is_deleted = 0
         ORDER BY title_prefix ASC, title ASC, id ASC
@@ -109,7 +109,7 @@ interface BlogDao {
      * Cursor is based on (title_prefix, title, id) for stable sorting.
      */
     @Query("""
-        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt, updated_at as updatedAt
         FROM blogs
         WHERE is_deleted = 0 AND (
            (title_prefix > :cursorPrefix)
@@ -126,11 +126,46 @@ interface BlogDao {
         pageSize: Int
     ): List<BlogListItem>
 
+    // ============================================
+    // SORT BY LATEST QUERIES
+    // ============================================
+
+    /**
+     * Get first page sorted by latest (updated_at DESC).
+     */
+    @Query("""
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt, updated_at as updatedAt
+        FROM blogs
+        WHERE is_deleted = 0
+        ORDER BY updated_at DESC, id DESC
+        LIMIT :pageSize
+    """)
+    suspend fun getFirstPageByLatest(pageSize: Int): List<BlogListItem>
+
+    /**
+     * Get next page sorted by latest using cursor.
+     */
+    @Query("""
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt, updated_at as updatedAt
+        FROM blogs
+        WHERE is_deleted = 0 AND (
+            updated_at < :cursorUpdatedAt
+            OR (updated_at = :cursorUpdatedAt AND id < :cursorId)
+        )
+        ORDER BY updated_at DESC, id DESC
+        LIMIT :pageSize
+    """)
+    suspend fun getNextPageByLatest(
+        cursorUpdatedAt: Long,
+        cursorId: Long,
+        pageSize: Int
+    ): List<BlogListItem>
+
     /**
      * Get blogs starting with a specific prefix for alphabet navigation.
      */
     @Query("""
-        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt, updated_at as updatedAt
         FROM blogs
         WHERE title_prefix LIKE :prefixPattern AND is_deleted = 0
         ORDER BY title_prefix ASC, title ASC, id ASC
@@ -213,7 +248,7 @@ interface BlogDao {
      * Search blogs by title only (fast, title-first search).
      */
     @Query("""
-        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt, updated_at as updatedAt
         FROM blogs
         WHERE title LIKE :query AND is_deleted = 0
         ORDER BY title ASC
@@ -225,7 +260,7 @@ interface BlogDao {
      * Search blogs by title OR content (advanced search).
      */
     @Query("""
-        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt, updated_at as updatedAt
         FROM blogs
         WHERE (title LIKE :query OR content LIKE :query) AND is_deleted = 0
         ORDER BY title ASC
@@ -238,7 +273,7 @@ interface BlogDao {
      * All date parameters are optional (pass 0 to ignore).
      */
     @Query("""
-        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt, updated_at as updatedAt
         FROM blogs
         WHERE (title LIKE :query OR (:includeContent = 1 AND content LIKE :query))
           AND is_deleted = 0

@@ -138,6 +138,26 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setShowSidebar(show: Boolean) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.setShowSidebar(show)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error setting show sidebar", e)
+            }
+        }
+    }
+
+    fun setShowQuickNavFab(show: Boolean) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.setShowQuickNavFab(show)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error setting show quick nav FAB", e)
+            }
+        }
+    }
+
     // ============================================
     // SYNC ACTIONS
     // ============================================

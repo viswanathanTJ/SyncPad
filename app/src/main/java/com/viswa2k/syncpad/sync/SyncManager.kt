@@ -309,6 +309,18 @@ class SyncManager @Inject constructor(
                     onFailure = { e ->
                         AppLogger.e(TAG, "Failed to stream from server", e)
                         isSyncRunning = false
+                        clearProgress()
+                        
+                        // For network interruptions (app minimized, WiFi lost), keep sync progress
+                        // so it auto-resumes on next app launch. For other errors, clear progress.
+                        if (e is NetworkInterruptedException) {
+                            AppLogger.i(TAG, "Network interrupted - sync will resume on next launch")
+                            // Keep syncInProgress = true so it auto-resumes
+                        } else {
+                            // Clear progress to prevent infinite error loops
+                            syncRepository.setSyncInProgress(false)
+                        }
+                        
                         return@withContext Result.failure(e)
                     }
                 )
@@ -486,6 +498,11 @@ class SyncManager @Inject constructor(
                         AppLogger.e(TAG, "Failed to stream from server", e)
                         isSyncRunning = false
                         clearProgress()
+                        
+                        // For network interruptions, provide a clear message
+                        // Note: Hard sync doesn't resume (we already cleared data)
+                        // so we always clear the progress flag here
+                        
                         return@withContext Result.failure(e)
                     }
                 )

@@ -7,6 +7,7 @@ import com.viswa2k.syncpad.data.dao.BlogDao
 import com.viswa2k.syncpad.data.entity.BlogEntity
 import com.viswa2k.syncpad.data.model.BlogListItem
 import com.viswa2k.syncpad.data.paging.BlogPagingSource
+import com.viswa2k.syncpad.data.paging.SortOrder
 import com.viswa2k.syncpad.util.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -46,16 +47,20 @@ class BlogRepository @Inject constructor(
      * Uses cursor-based pagination for stability at 200k+ rows.
      * 
      * @param prefixFilter Optional filter for prefix-based navigation
+     * @param sortOrder Sort order (ALPHABETICAL or LATEST)
      * @return Flow of PagingData containing BlogListItem (no content)
      */
-    fun getPagedBlogs(prefixFilter: String? = null): Flow<PagingData<BlogListItem>> {
+    fun getPagedBlogs(
+        prefixFilter: String? = null, 
+        sortOrder: SortOrder = SortOrder.ALPHABETICAL
+    ): Flow<PagingData<BlogListItem>> {
         return Pager(
             config = PagingConfig(
                 pageSize = PAGE_SIZE,
                 enablePlaceholders = false,
                 prefetchDistance = PAGE_SIZE / 2
             ),
-            pagingSourceFactory = { BlogPagingSource(blogDao, prefixFilter) }
+            pagingSourceFactory = { BlogPagingSource(blogDao, prefixFilter, sortOrder) }
         ).flow
             .catch { e ->
                 AppLogger.e(TAG, "Error in paged blogs flow", e)

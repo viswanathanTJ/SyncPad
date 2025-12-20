@@ -6,6 +6,7 @@ import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import com.viswa2k.syncpad.data.entity.PrefixIndexEntity
 import com.viswa2k.syncpad.data.model.BlogListItem
+import com.viswa2k.syncpad.data.paging.SortOrder
 import com.viswa2k.syncpad.repository.BlogRepository
 import com.viswa2k.syncpad.repository.PrefixIndexRepository
 import com.viswa2k.syncpad.repository.SettingsRepository
@@ -59,16 +60,24 @@ class BlogListViewModel @Inject constructor(
     private val _refreshTrigger = MutableStateFlow(0)
 
     // ============================================
+    // SORT ORDER STATE
+    // ============================================
+    
+    private val _sortOrder = MutableStateFlow(SortOrder.ALPHABETICAL)
+    val sortOrder: StateFlow<SortOrder> = _sortOrder.asStateFlow()
+
+    // ============================================
     // PAGED BLOGS
     // ============================================
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val pagedBlogs: Flow<PagingData<BlogListItem>> = combine(
         _prefixFilter,
-        _refreshTrigger
-    ) { prefix, _ -> prefix }
-        .flatMapLatest { prefix ->
-            blogRepository.getPagedBlogs(prefix)
+        _refreshTrigger,
+        _sortOrder
+    ) { prefix, _, sort -> Pair(prefix, sort) }
+        .flatMapLatest { (prefix, sort) ->
+            blogRepository.getPagedBlogs(prefix, sort)
         }
         .cachedIn(viewModelScope)
 
@@ -140,6 +149,28 @@ class BlogListViewModel @Inject constructor(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = SettingsRepository.DEFAULT_MAX_DEPTH
+        )
+
+    val showSidebar: StateFlow<Boolean> = settingsRepository.getShowSidebarFlow()
+        .catch { e ->
+            AppLogger.e(TAG, "Error in show sidebar flow", e)
+            emit(SettingsRepository.DEFAULT_SHOW_SIDEBAR)
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = SettingsRepository.DEFAULT_SHOW_SIDEBAR
+        )
+
+    val showQuickNavFab: StateFlow<Boolean> = settingsRepository.getShowQuickNavFabFlow()
+        .catch { e ->
+            AppLogger.e(TAG, "Error in show quick nav FAB flow", e)
+            emit(SettingsRepository.DEFAULT_SHOW_QUICK_NAV_FAB)
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = SettingsRepository.DEFAULT_SHOW_QUICK_NAV_FAB
         )
 
     // ============================================
@@ -293,6 +324,18 @@ class BlogListViewModel @Inject constructor(
      */
     fun clearFilter() {
         _prefixFilter.value = null
+    }
+
+    /**
+     * Toggle sort order between ALPHABETICAL and LATEST.
+     */
+    fun toggleSortOrder() {
+        _sortOrder.value = if (_sortOrder.value == SortOrder.ALPHABETICAL) {
+            SortOrder.LATEST
+        } else {
+            SortOrder.ALPHABETICAL
+        }
+        AppLogger.d(TAG, "Sort order toggled to: ${_sortOrder.value}")
     }
 
     /**
