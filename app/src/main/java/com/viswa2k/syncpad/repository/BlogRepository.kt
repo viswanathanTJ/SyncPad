@@ -32,6 +32,7 @@ class BlogRepository @Inject constructor(
     companion object {
         private const val TAG = "BlogRepository"
         private const val PAGE_SIZE = 50
+        const val SYNC_BATCH_SIZE = 500 // Batch size for sync operations
     }
 
     // Event bus to notify when data changes
@@ -363,6 +364,26 @@ class BlogRepository @Inject constructor(
                 Result.success(ids)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error inserting blogs batch", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Insert multiple blogs at once without emitting dataChanged event.
+     * Used during streaming sync to avoid spamming list refreshes.
+     * Call notifyDataChanged() manually after sync completes.
+     * 
+     * @param blogs List of blog entities to insert (max SYNC_BATCH_SIZE recommended)
+     * @return Result containing list of inserted IDs or an error
+     */
+    suspend fun insertBlogsSilent(blogs: List<BlogEntity>): Result<List<Long>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val ids = blogDao.insertAll(blogs)
+                Result.success(ids)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error inserting blogs batch (silent)", e)
                 Result.failure(e)
             }
         }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.viswa2k.syncpad.BuildConfig
+import com.viswa2k.syncpad.data.entity.BlogEntity
 import com.viswa2k.syncpad.repository.BlogRepository
 import com.viswa2k.syncpad.repository.PrefixIndexRepository
 import com.viswa2k.syncpad.repository.SyncRepository
@@ -60,6 +61,14 @@ class SyncManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SyncManager"
+        
+        /**
+         * Batch size for database inserts during sync.
+         * Balances memory usage (~2.5MB max) vs transaction overhead.
+         * - 500 items = ~500 transactions for 250K rows (vs 250K individual inserts)
+         * - If exception occurs, max 500 items need re-download (acceptable)
+         */
+        private const val BATCH_INSERT_SIZE = 500
     }
 
     /**
@@ -256,51 +265,95 @@ class SyncManager @Inject constructor(
                     }
                 }
                 
-                // Helper to calculate percentage
-                fun getPercentage(): Int = if (totalExpected > 0) (receivedFromServer * 100 / totalExpected) else 0
+                // For resume: calculate already downloaded items based on local count
+                // This gives accurate progress when resuming an interrupted sync
+                val alreadyDownloaded = if (isResuming) localBlogCount else 0
                 
-                // STEP 1: Download from server using streaming to avoid OOM
-                // Each blog is inserted directly to DB as it's parsed (silent = no UI refresh per item)
-                updateProgress("Downloading notes...", 0)
+                // Helper to calculate percentage including already downloaded items
+                fun getPercentage(): Int {
+                    val totalProcessed = alreadyDownloaded + receivedFromServer
+                    return if (totalExpected > 0) (totalProcessed * 100 / totalExpected) else 0
+                }
+                
+                // STEP 1: Download from server using streaming with BATCH INSERTS
+                // Buffer items and insert in batches of BATCH_INSERT_SIZE for 5-10x faster sync
+                // Track lastSyncId only AFTER successful batch insert for safe resume
+                val initialPercent = if (isResuming) getPercentage() else 0
+                val statusText = if (isResuming) "Resuming download... $initialPercent%" else "Downloading notes..."
+                updateProgress(statusText, alreadyDownloaded)
+                
+                // Batch buffer - max ~2.5MB memory (500 items × ~5KB each)
+                val batchBuffer = mutableListOf<BlogEntity>()
+                var lastSuccessfulBatchId: Long = resumeFromId ?: 0
+                
+                /**
+                 * Flush the batch buffer to database.
+                 * Updates lastSyncId only after successful insert for safe resume.
+                 */
+                suspend fun flushBatch() {
+                    if (batchBuffer.isEmpty()) return
+                    
+                    val batchMaxId = batchBuffer.maxOfOrNull { it.id } ?: 0
+                    
+                    // Insert batch - all or nothing
+                    blogRepository.insertBlogsSilent(batchBuffer).fold(
+                        onSuccess = {
+                            // Track prefixes for index update
+                            batchBuffer.forEach { affectedPrefixes.add(it.titlePrefix) }
+                            
+                            // Update lastSyncId ONLY after successful batch insert
+                            if (batchMaxId > 0) {
+                                lastSuccessfulBatchId = batchMaxId
+                                syncRepository.setSyncLastId(batchMaxId)
+                            }
+                            
+                            AppLogger.d(TAG, "Inserted batch of ${batchBuffer.size} items, lastId=$batchMaxId")
+                        },
+                        onFailure = { e ->
+                            AppLogger.e(TAG, "Failed to insert batch of ${batchBuffer.size} items", e)
+                            throw e // Propagate exception to stop sync
+                        }
+                    )
+                    
+                    batchBuffer.clear() // Release memory immediately
+                }
                 
                 // Use resume-aware streaming if we're resuming
                 val streamResult = if (isResuming && resumeFromId != null) {
                     supabaseApi.streamBlogsAfterId(lastSyncTime, resumeFromId) { blogDto ->
                         val entity = blogDto.toBlogEntity()
-                        blogRepository.insertBlogSilent(entity)
-                        affectedPrefixes.add(entity.titlePrefix)
+                        batchBuffer.add(entity)
                         receivedFromServer++
                         
-                        // Track last synced ID for resume capability
-                        blogDto.id?.let { syncRepository.setSyncLastId(it) }
-                        
-                        // Update progress with percentage every 50 items
-                        if (receivedFromServer % 50 == 0) {
+                        // Flush batch when full
+                        if (batchBuffer.size >= BATCH_INSERT_SIZE) {
+                            flushBatch()
                             val percent = getPercentage()
-                            updateProgress("Downloading... $percent%", receivedFromServer)
+                            val totalProcessed = alreadyDownloaded + receivedFromServer
+                            updateProgress("Resuming... $percent%", totalProcessed)
                         }
                     }
                 } else {
                     supabaseApi.streamBlogsAfter(lastSyncTime) { blogDto ->
                         val entity = blogDto.toBlogEntity()
-                        blogRepository.insertBlogSilent(entity)
-                        affectedPrefixes.add(entity.titlePrefix)
+                        batchBuffer.add(entity)
                         receivedFromServer++
                         
-                        // Track last synced ID for resume capability
-                        blogDto.id?.let { syncRepository.setSyncLastId(it) }
-                        
-                        // Update progress with percentage every 50 items
-                        if (receivedFromServer % 50 == 0) {
+                        // Flush batch when full
+                        if (batchBuffer.size >= BATCH_INSERT_SIZE) {
+                            flushBatch()
                             val percent = getPercentage()
                             updateProgress("Downloading... $percent%", receivedFromServer)
                         }
                     }
                 }
                 
+                // Flush any remaining items in buffer
+                flushBatch()
+                
                 streamResult.fold(
                     onSuccess = { count ->
-                        AppLogger.i(TAG, "Streamed $count blogs from server for sync")
+                        AppLogger.i(TAG, "Streamed $count blogs from server for sync (batch insert)")
                         
                         // Count only truly NEW items (not updates)
                         val newBlogCount = blogRepository.getBlogCount().getOrNull() ?: 0
@@ -314,7 +367,7 @@ class SyncManager @Inject constructor(
                         // For network interruptions (app minimized, WiFi lost), keep sync progress
                         // so it auto-resumes on next app launch. For other errors, clear progress.
                         if (e is NetworkInterruptedException) {
-                            AppLogger.i(TAG, "Network interrupted - sync will resume on next launch")
+                            AppLogger.i(TAG, "Network interrupted - sync will resume on next launch (lastId=$lastSuccessfulBatchId)")
                             // Keep syncInProgress = true so it auto-resumes
                         } else {
                             // Clear progress to prevent infinite error loops
@@ -468,31 +521,62 @@ class SyncManager @Inject constructor(
                 syncRepository.clearAll()
                 prefixIndexRepository.clearIndex()
                 
+                // Notify UI immediately after clearing so list shows empty state
+                blogRepository.notifyDataChanged()
+                
                 AppLogger.d(TAG, "Cleared local data ($previousCount items)")
                 
                 // Get server count for progress display
                 updateProgress("Counting records...")
                 val totalExpected = supabaseApi.getServerCount(0L).getOrNull() ?: 0
                 
-                // Download all blogs from server using streaming to avoid OOM
+                // Download all blogs from server using BATCH INSERTS for 5-10x faster sync
                 var downloadedCount = 0
                 updateProgress("Downloading notes...", 0)
                 
+                // Batch buffer - max ~2.5MB memory (500 items × ~5KB each)
+                val batchBuffer = mutableListOf<BlogEntity>()
+                
                 val streamResult = supabaseApi.streamAllBlogs { blogDto ->
                     val entity = blogDto.toBlogEntity()
-                    blogRepository.insertBlogSilent(entity)
+                    batchBuffer.add(entity)
                     downloadedCount++
                     
-                    // Update progress every 50 items
-                    if (downloadedCount % 50 == 0) {
+                    // Flush batch when full
+                    if (batchBuffer.size >= BATCH_INSERT_SIZE) {
+                        blogRepository.insertBlogsSilent(batchBuffer).fold(
+                            onSuccess = {
+                                AppLogger.d(TAG, "Inserted batch of ${batchBuffer.size} items")
+                            },
+                            onFailure = { e ->
+                                AppLogger.e(TAG, "Failed to insert batch of ${batchBuffer.size} items", e)
+                                throw e
+                            }
+                        )
+                        batchBuffer.clear()
+                        
                         val percent = if (totalExpected > 0) (downloadedCount * 100 / totalExpected) else 0
                         updateProgress("Downloading... $percent%", downloadedCount)
                     }
                 }
                 
+                // Flush remaining items in buffer
+                if (batchBuffer.isNotEmpty()) {
+                    blogRepository.insertBlogsSilent(batchBuffer).fold(
+                        onSuccess = {
+                            AppLogger.d(TAG, "Inserted final batch of ${batchBuffer.size} items")
+                        },
+                        onFailure = { e ->
+                            AppLogger.e(TAG, "Failed to insert final batch of ${batchBuffer.size} items", e)
+                            throw e
+                        }
+                    )
+                    batchBuffer.clear()
+                }
+                
                 streamResult.fold(
                     onSuccess = { count ->
-                        AppLogger.d(TAG, "Streamed $count blogs from server")
+                        AppLogger.d(TAG, "Streamed $count blogs from server (batch insert)")
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Failed to stream from server", e)

@@ -418,18 +418,28 @@ fun HomeScreen(
                         )
                     }
                     pagedBlogs.itemCount == 0 -> {
-                        EmptyState(
-                            message = if (prefixFilter != null) {
-                                "No blogs starting with '$prefixFilter'"
-                            } else {
-                                "No blogs yet. Tap + to add one!"
-                            },
-                            actionLabel = if (prefixFilter != null) "Clear filter" else null,
-                            onAction = if (prefixFilter != null) {
-                                { viewModel.clearFilter() }
-                            } else null,
-                            modifier = Modifier.align(Alignment.Center)
-                        )
+                        // Show sync status in center when list is empty and syncing
+                        if (syncState is SyncState.Syncing) {
+                            val syncing = syncState as SyncState.Syncing
+                            SyncingCenterStatus(
+                                message = syncing.message,
+                                count = syncing.count,
+                                modifier = Modifier.align(Alignment.Center)
+                            )
+                        } else {
+                            EmptyState(
+                                message = if (prefixFilter != null) {
+                                    "No blogs starting with '$prefixFilter'"
+                                } else {
+                                    "No blogs yet. Tap + to add one!"
+                                },
+                                actionLabel = if (prefixFilter != null) "Clear filter" else null,
+                                onAction = if (prefixFilter != null) {
+                                    { viewModel.clearFilter() }
+                                } else null,
+                                modifier = Modifier.align(Alignment.Center)
+                            )
+                        }
                     }
                     else -> {
                         // State for popup drill-down from section header
@@ -955,3 +965,61 @@ private fun DrillDownPopupFromHeader(
     }
 }
 
+/**
+ * Sync status displayed in center of screen when list is empty and sync is in progress.
+ * Shows a prominent sync indicator with progress message.
+ */
+@Composable
+private fun SyncingCenterStatus(
+    message: String,
+    count: Int,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "sync_center")
+    val rotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation"
+    )
+    
+    Column(
+        modifier = modifier.padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        // Rotating sync icon
+        Icon(
+            imageVector = Icons.Default.Sync,
+            contentDescription = "Syncing",
+            modifier = Modifier
+                .size(64.dp)
+                .graphicsLayer { rotationZ = rotation },
+            tint = MaterialTheme.colorScheme.primary
+        )
+        
+        Spacer(modifier = Modifier.size(24.dp))
+        
+        // Status message
+        Text(
+            text = message,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+        
+        // Count if available
+        if (count > 0) {
+            Spacer(modifier = Modifier.size(8.dp))
+            Text(
+                text = "$count items processed",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+        }
+    }
+}
