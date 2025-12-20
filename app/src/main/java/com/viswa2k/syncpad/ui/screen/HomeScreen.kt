@@ -220,7 +220,9 @@ fun HomeScreen(
                         Column {
                             Text("SyncPad")
                             when {
-                                syncState is SyncState.Syncing -> {
+                                // Don't show sync status in title when list is empty
+                                // (it's shown in the center of the screen instead)
+                                syncState is SyncState.Syncing && blogCount > 0 -> {
                                     val syncing = syncState as SyncState.Syncing
                                     Text(
                                         text = syncing.message,

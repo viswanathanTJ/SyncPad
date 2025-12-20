@@ -769,19 +769,28 @@ class SupabaseApi @Inject constructor() {
                     .addHeader("apikey", apiKey)
                     .addHeader("Authorization", "Bearer $apiKey")
                     .addHeader("Content-Type", "application/json")
-                    .addHeader("Prefer", "return=minimal")
+                    .addHeader("Prefer", "return=representation") // Request updated record back
                     .patch(json.toRequestBody(JSON_MEDIA_TYPE))
                     .build()
 
-                AppLogger.d(TAG, "Soft deleting blog on server: $blogId")
+                AppLogger.d(TAG, "Soft deleting blog on server: $blogId, URL: $url")
 
                 val response = client.newCall(request).execute()
 
                 response.use { resp ->
+                    val responseBody = resp.body?.string()
+                    AppLogger.d(TAG, "Soft delete response: ${resp.code} - $responseBody")
+                    
                     if (!resp.isSuccessful) {
-                        val errorBody = resp.body?.string() ?: "Unknown error"
-                        AppLogger.e(TAG, "Failed to soft delete on server: ${resp.code} - $errorBody")
+                        AppLogger.e(TAG, "Failed to soft delete on server: ${resp.code} - $responseBody")
                         return@withContext Result.failure(Exception("Failed to soft delete: ${resp.code}"))
+                    }
+                    
+                    // Check if the response indicates any rows were updated
+                    // Supabase returns an array - if empty [], no rows matched the filter
+                    if (responseBody != null && responseBody.trim() == "[]") {
+                        AppLogger.w(TAG, "Blog $blogId not found on server (empty response)")
+                        // Still consider success - blog doesn't exist on server anyway
                     }
                 }
 

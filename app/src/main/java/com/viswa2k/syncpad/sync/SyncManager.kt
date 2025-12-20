@@ -743,8 +743,8 @@ class SyncManager @Inject constructor(
                 
                 AppLogger.d(TAG, "Soft deleting blog on server: $blogId")
                 
-                // Soft delete on server (set is_deleted = true)
-                supabaseApi.softDeleteOnServer(blogId)
+                // Soft delete on server (set is_deleted = true) and return the result
+                return@withContext supabaseApi.softDeleteOnServer(blogId)
                 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting blog from server: $blogId", e)
