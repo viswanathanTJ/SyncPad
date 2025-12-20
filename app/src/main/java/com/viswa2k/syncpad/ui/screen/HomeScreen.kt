@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -77,6 +78,7 @@ import com.viswa2k.syncpad.ui.components.EmptyState
 import com.viswa2k.syncpad.ui.components.ErrorDisplay
 import com.viswa2k.syncpad.ui.components.HierarchicalIndexSidebar
 import com.viswa2k.syncpad.ui.components.LoadingIndicator
+import com.viswa2k.syncpad.ui.components.QuickNavigationPopup
 import com.viswa2k.syncpad.ui.state.IndexState
 import com.viswa2k.syncpad.ui.state.SyncState
 import com.viswa2k.syncpad.ui.state.UiState
@@ -115,6 +117,9 @@ fun HomeScreen(
     
     // Auto-sync only on first install (when never synced before)
     var hasAutoSynced by remember { mutableStateOf(false) }
+    
+    // Quick navigation popup state
+    var showQuickNav by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if (!hasAutoSynced) {
             hasAutoSynced = true
@@ -210,6 +215,14 @@ fun HomeScreen(
                         }
                     },
                     actions = {
+                        // Quick navigation button
+                        IconButton(onClick = { showQuickNav = true }) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Quick navigation"
+                            )
+                        }
+                        
                         // Search button
                         IconButton(onClick = onSearchClick) {
                             Icon(
@@ -503,6 +516,16 @@ fun HomeScreen(
                 }
             }
         }
+    }
+    
+    // Quick navigation popup
+    if (showQuickNav) {
+        val indices = (alphabetIndex as? UiState.Success)?.data ?: emptyList()
+        QuickNavigationPopup(
+            indices = indices,
+            onPrefixSelected = { viewModel.filterByPrefix(it) },
+            onDismiss = { showQuickNav = false }
+        )
     }
 }
 
