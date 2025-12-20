@@ -379,7 +379,8 @@ fun HomeScreen(
                             onPrefixSelected = { viewModel.filterByPrefix(it) },
                             onGetChildCounts = { parentPrefix -> 
                                 viewModel.getChildPrefixCounts(parentPrefix) 
-                            }
+                            },
+                            showQuickNavFab = showQuickNavFab
                         )
                     }
                     else -> {
@@ -388,7 +389,8 @@ fun HomeScreen(
                             indices = emptyList(),
                             maxDepth = maxDepth,
                             onPrefixSelected = {},
-                            onGetChildCounts = { emptyMap() }
+                            onGetChildCounts = { emptyMap() },
+                            showQuickNavFab = showQuickNavFab
                         )
                     }
                 }

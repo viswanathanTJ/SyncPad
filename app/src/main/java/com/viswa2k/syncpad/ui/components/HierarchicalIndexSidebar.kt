@@ -29,12 +29,18 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -55,7 +61,8 @@ fun HierarchicalIndexSidebar(
     maxDepth: Int,
     onPrefixSelected: (String) -> Unit,
     onGetChildCounts: suspend (String) -> Map<String, Int>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showQuickNavFab: Boolean = false
 ) {
     val listState = rememberLazyListState()
     
@@ -66,14 +73,51 @@ fun HierarchicalIndexSidebar(
 
     // State for popup navigation (on long press)
     var currentPopupPrefix: String? by remember { mutableStateOf(null) }
+    
+    // Calculate scroll edge fading
+    val canScrollUp by remember { derivedStateOf { listState.canScrollBackward } }
+    val canScrollDown by remember { derivedStateOf { listState.canScrollForward } }
+    val fadeColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    
+    // Bottom padding when FAB is shown to avoid overlap
+    val bottomPadding = if (showQuickNavFab) 80.dp else 4.dp
 
     LazyColumn(
         state = listState,
         modifier = modifier
             .fillMaxHeight()
             .width(52.dp)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .padding(vertical = 4.dp),
+            .background(fadeColor)
+            .padding(top = 4.dp, bottom = bottomPadding)
+            .drawWithContent {
+                drawContent()
+                
+                // Top fade edge when can scroll up
+                if (canScrollUp) {
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(fadeColor, Color.Transparent),
+                            startY = 0f,
+                            endY = 24.dp.toPx()
+                        ),
+                        topLeft = Offset.Zero,
+                        size = Size(size.width, 24.dp.toPx())
+                    )
+                }
+                
+                // Bottom fade edge when can scroll down
+                if (canScrollDown) {
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, fadeColor),
+                            startY = size.height - 24.dp.toPx(),
+                            endY = size.height
+                        ),
+                        topLeft = Offset(0f, size.height - 24.dp.toPx()),
+                        size = Size(size.width, 24.dp.toPx())
+                    )
+                }
+            },
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         items(
