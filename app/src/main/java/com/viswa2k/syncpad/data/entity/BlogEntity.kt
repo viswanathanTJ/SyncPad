@@ -16,7 +16,9 @@ import androidx.room.PrimaryKey
  *   title_prefix TEXT NOT NULL,
  *   created_at INTEGER NOT NULL,
  *   updated_at INTEGER NOT NULL,
- *   device_id TEXT NOT NULL
+ *   device_id TEXT NOT NULL,
+ *   is_deleted INTEGER NOT NULL DEFAULT 0,
+ *   deleted_at INTEGER
  * );
  */
 @Entity(
@@ -24,7 +26,8 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["title_prefix"]),
         Index(value = ["created_at"]),
-        Index(value = ["updated_at"])
+        Index(value = ["updated_at"]),
+        Index(value = ["is_deleted"])
     ]
 )
 data class BlogEntity(
@@ -47,7 +50,13 @@ data class BlogEntity(
     val updatedAt: Long,
 
     @ColumnInfo(name = "device_id")
-    val deviceId: String
+    val deviceId: String,
+
+    @ColumnInfo(name = "is_deleted", defaultValue = "0")
+    val isDeleted: Boolean = false,
+
+    @ColumnInfo(name = "deleted_at")
+    val deletedAt: Long? = null
 ) {
     companion object {
         /**

@@ -5,13 +5,17 @@ import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -23,6 +27,7 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -114,17 +119,18 @@ fun AddBlogScreen(
         }
     }
 
-    // Auto-save on back navigation
+    // Auto-save on back navigation - only save if content is not empty
     fun saveAndGoBack() {
-        if (hasUnsavedChanges || content.isNotBlank()) {
+        if (content.isNotBlank()) {
             // Auto-populate title from content if empty
-            val finalTitle = if (title.isBlank() && content.isNotBlank()) {
+            val finalTitle = if (title.isBlank()) {
                 generateTitleFromContent(content)
             } else {
                 title
             }
             viewModel.saveBlog(finalTitle, content)
         } else {
+            // Content is empty, don't save, just go back
             onNavigateBack()
         }
     }
@@ -174,6 +180,18 @@ fun AddBlogScreen(
                             imageVector = Icons.Default.ContentPaste,
                             contentDescription = "Paste from clipboard"
                         )
+                    }
+                    // Cancel button with X icon and text - discard changes and go back
+                    TextButton(onClick = { onNavigateBack() }) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Cancel")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -239,9 +257,11 @@ fun AddBlogScreen(
                                 content = newContent
                                 hasUnsavedChanges = true
                                 
-                                // Always auto-update title from content
-                                if (newContent.isNotBlank()) {
-                                    title = generateTitleFromContent(newContent)
+                                // Auto-update title from content - clear title if content is empty
+                                title = if (newContent.isNotBlank()) {
+                                    generateTitleFromContent(newContent)
+                                } else {
+                                    ""
                                 }
                             },
                             label = { Text("Content") },

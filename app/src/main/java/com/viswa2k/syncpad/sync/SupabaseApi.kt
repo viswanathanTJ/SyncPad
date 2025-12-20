@@ -30,7 +30,9 @@ data class BlogDto(
     @SerializedName("title_prefix") val titlePrefix: String? = null, // May be null or incorrect from server
     @SerializedName("created_at") val createdAt: Long,
     @SerializedName("updated_at") val updatedAt: Long,
-    @SerializedName("device_id") val deviceId: String
+    @SerializedName("device_id") val deviceId: String,
+    @SerializedName("is_deleted") val isDeleted: Boolean = false,
+    @SerializedName("deleted_at") val deletedAt: Long? = null
 ) {
     companion object {
         /**
@@ -47,7 +49,9 @@ data class BlogDto(
                 titlePrefix = entity.titlePrefix,
                 createdAt = entity.createdAt,
                 updatedAt = entity.updatedAt,
-                deviceId = entity.deviceId
+                deviceId = entity.deviceId,
+                isDeleted = entity.isDeleted,
+                deletedAt = entity.deletedAt
             )
         }
     }
@@ -68,10 +72,17 @@ data class BlogDto(
             titlePrefix = calculatedPrefix,
             createdAt = createdAt,
             updatedAt = updatedAt,
-            deviceId = deviceId
+            deviceId = deviceId,
+            isDeleted = isDeleted,
+            deletedAt = deletedAt
         )
     }
 }
+
+/**
+ * Simple DTO for parsing deleted blog IDs from recycle_bin table.
+ */
+private data class DeletedIdDto(val id: Long? = null)
 
 /**
  * Supabase REST API client for blog sync.
@@ -252,6 +263,72 @@ class SupabaseApi @Inject constructor() {
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error getting server count", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Get all blog IDs from the server.
+     * Used to detect direct deletions by comparing with local IDs.
+     * 
+     * @return Result containing set of all server blog IDs
+     */
+    suspend fun getAllBlogIds(): Result<Set<Long>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val baseUrl = BuildConfig.SYNC_BASE_URL
+                val apiKey = BuildConfig.SYNC_API_KEY
+
+                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                    return@withContext Result.failure(Exception("Sync not configured"))
+                }
+
+                val allIds = mutableSetOf<Long>()
+                var offset = 0
+                var hasMore = true
+
+                while (hasMore) {
+                    val url = "$baseUrl/rest/v1/blogs?select=id" +
+                            "&order=id.asc" +
+                            "&limit=$PAGE_SIZE" +
+                            "&offset=$offset"
+
+                    val request = Request.Builder()
+                        .url(url)
+                        .addHeader("apikey", apiKey)
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .get()
+                        .build()
+
+                    AppLogger.d(TAG, "Fetching all blog IDs, offset $offset")
+
+                    val response = client.newCall(request).execute()
+
+                    response.use { resp ->
+                        if (!resp.isSuccessful) {
+                            val errorBody = resp.body?.string() ?: "Unknown error"
+                            AppLogger.e(TAG, "API error fetching IDs: ${resp.code} - $errorBody")
+                            return@withContext Result.failure(Exception("Failed to fetch IDs: ${resp.code}"))
+                        }
+
+                        val body = resp.body?.string() ?: "[]"
+                        val idObjects = gson.fromJson(body, Array<DeletedIdDto>::class.java) ?: emptyArray()
+                        val pageIds = idObjects.mapNotNull { it.id }
+                        
+                        allIds.addAll(pageIds)
+                        
+                        hasMore = pageIds.size == PAGE_SIZE
+                        offset += PAGE_SIZE
+                    }
+                }
+
+                AppLogger.i(TAG, "Fetched ${allIds.size} blog IDs from server")
+                Result.success(allIds)
+
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error fetching all blog IDs", e)
                 Result.failure(e)
             }
         }
@@ -616,15 +693,13 @@ class SupabaseApi @Inject constructor() {
     }
 
     /**
-     * Move a blog to the recycle_bin table and delete from blogs table.
-     * This is a two-step operation:
-     * 1. Insert the blog data into recycle_bin table (with deleted_at timestamp)
-     * 2. Delete from blogs table
+     * Soft delete a blog on the server by setting is_deleted = true.
+     * This replaces the old recycle_bin approach with simpler soft delete.
      * 
-     * @param blogId The ID of the blog to move to recycle bin
+     * @param blogId The ID of the blog to soft delete
      * @return Result indicating success or failure
      */
-    suspend fun moveToRecycleBin(blogId: Long): Result<Unit> {
+    suspend fun softDeleteOnServer(blogId: Long): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
                 val baseUrl = BuildConfig.SYNC_BASE_URL
@@ -634,96 +709,117 @@ class SupabaseApi @Inject constructor() {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
-                // Step 1: Get the blog data from server first
-                val getUrl = "$baseUrl/rest/v1/blogs?id=eq.$blogId&select=*"
-                val getRequest = Request.Builder()
-                    .url(getUrl)
+                val now = System.currentTimeMillis()
+                val url = "$baseUrl/rest/v1/blogs?id=eq.$blogId"
+                
+                val updateData = mapOf(
+                    "is_deleted" to true,
+                    "deleted_at" to now,
+                    "updated_at" to now
+                )
+                val json = gson.toJson(updateData)
+
+                val request = Request.Builder()
+                    .url(url)
                     .addHeader("apikey", apiKey)
                     .addHeader("Authorization", "Bearer $apiKey")
                     .addHeader("Content-Type", "application/json")
-                    .get()
+                    .addHeader("Prefer", "return=minimal")
+                    .patch(json.toRequestBody(JSON_MEDIA_TYPE))
                     .build()
 
-                val getResponse = client.newCall(getRequest).execute()
-                
-                getResponse.use { resp ->
+                AppLogger.d(TAG, "Soft deleting blog on server: $blogId")
+
+                val response = client.newCall(request).execute()
+
+                response.use { resp ->
                     if (!resp.isSuccessful) {
                         val errorBody = resp.body?.string() ?: "Unknown error"
-                        AppLogger.e(TAG, "Failed to fetch blog for recycle: ${resp.code} - $errorBody")
-                        return@withContext Result.failure(Exception("Failed to fetch blog: ${resp.code}"))
+                        AppLogger.e(TAG, "Failed to soft delete on server: ${resp.code} - $errorBody")
+                        return@withContext Result.failure(Exception("Failed to soft delete: ${resp.code}"))
                     }
-
-                    val body = resp.body?.string() ?: "[]"
-                    val blogs = gson.fromJson(body, Array<BlogDto>::class.java)
-                    
-                    if (blogs.isEmpty()) {
-                        // Blog doesn't exist on server, just return success
-                        AppLogger.w(TAG, "Blog $blogId not found on server, skipping recycle bin")
-                        return@withContext Result.success(Unit)
-                    }
-
-                    val blog = blogs.first()
-
-                    // Step 2: Insert into recycle_bin table
-                    val recycleBinUrl = "$baseUrl/rest/v1/recycle_bin"
-                    val now = System.currentTimeMillis()
-                    val recycleData = mapOf(
-                        "id" to blog.id,
-                        "title" to blog.title,
-                        "content" to blog.content,
-                        "title_prefix" to blog.titlePrefix,
-                        "created_at" to blog.createdAt,
-                        "updated_at" to blog.updatedAt,
-                        "device_id" to blog.deviceId,
-                        "deleted_at" to now
-                    )
-                    val recycleJson = gson.toJson(recycleData)
-
-                    val recycleRequest = Request.Builder()
-                        .url(recycleBinUrl)
-                        .addHeader("apikey", apiKey)
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .addHeader("Content-Type", "application/json")
-                        .addHeader("Prefer", "resolution=merge-duplicates")
-                        .post(recycleJson.toRequestBody(JSON_MEDIA_TYPE))
-                        .build()
-
-                    val recycleResponse = client.newCall(recycleRequest).execute()
-                    
-                    recycleResponse.use { recycleResp ->
-                        if (!recycleResp.isSuccessful) {
-                            val errorBody = recycleResp.body?.string() ?: "Unknown error"
-                            AppLogger.e(TAG, "Failed to insert into recycle_bin: ${recycleResp.code} - $errorBody")
-                            return@withContext Result.failure(Exception("Failed to move to recycle bin: ${recycleResp.code}"))
-                        }
-                    }
-
-                    // Step 3: Delete from blogs table
-                    val deleteUrl = "$baseUrl/rest/v1/blogs?id=eq.$blogId"
-                    val deleteRequest = Request.Builder()
-                        .url(deleteUrl)
-                        .addHeader("apikey", apiKey)
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .addHeader("Content-Type", "application/json")
-                        .delete()
-                        .build()
-
-                    val deleteResponse = client.newCall(deleteRequest).execute()
-                    
-                    deleteResponse.use { deleteResp ->
-                        if (!deleteResp.isSuccessful) {
-                            val errorBody = deleteResp.body?.string() ?: "Unknown error"
-                            AppLogger.e(TAG, "Failed to delete blog: ${deleteResp.code} - $errorBody")
-                            return@withContext Result.failure(Exception("Failed to delete from server: ${deleteResp.code}"))
-                        }
-                    }
-
-                    AppLogger.i(TAG, "Blog $blogId moved to recycle bin successfully")
-                    Result.success(Unit)
                 }
+
+                AppLogger.i(TAG, "Blog $blogId soft deleted on server")
+                Result.success(Unit)
+
             } catch (e: Exception) {
-                AppLogger.e(TAG, "Error moving blog to recycle bin", e)
+                AppLogger.e(TAG, "Error soft deleting blog on server", e)
                 Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Get IDs of blogs that have been soft-deleted on the server.
+     * Queries blogs table for is_deleted = true.
+     * 
+     * @param afterTimestamp Only get deletions that occurred after this timestamp
+     * @return Result containing list of deleted blog IDs
+     */
+    suspend fun getDeletedBlogIds(afterTimestamp: Long): Result<List<Long>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val baseUrl = BuildConfig.SYNC_BASE_URL
+                val apiKey = BuildConfig.SYNC_API_KEY
+
+                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                    return@withContext Result.failure(Exception("Sync not configured"))
+                }
+
+                val allIds = mutableListOf<Long>()
+                var offset = 0
+                var hasMore = true
+
+                while (hasMore) {
+                    // Query blogs for soft-deleted items after timestamp
+                    val url = "$baseUrl/rest/v1/blogs?select=id" +
+                            "&is_deleted=eq.true" +
+                            "&updated_at=gte.$afterTimestamp" +
+                            "&order=id.asc" +
+                            "&limit=$PAGE_SIZE" +
+                            "&offset=$offset"
+
+                    val request = Request.Builder()
+                        .url(url)
+                        .addHeader("apikey", apiKey)
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .get()
+                        .build()
+
+                    AppLogger.d(TAG, "Fetching soft-deleted IDs, offset $offset")
+
+                    val response = client.newCall(request).execute()
+
+                    response.use { resp ->
+                        if (!resp.isSuccessful) {
+                            val errorBody = resp.body?.string() ?: "Unknown error"
+                            AppLogger.e(TAG, "API error fetching deleted IDs: ${resp.code} - $errorBody")
+                            // Don't fail sync for this, just return empty list
+                            return@withContext Result.success(emptyList())
+                        }
+
+                        val body = resp.body?.string() ?: "[]"
+                        
+                        // Parse the JSON array of {id: Long} objects
+                        val idObjects = gson.fromJson(body, Array<DeletedIdDto>::class.java) ?: emptyArray()
+                        val pageIds = idObjects.mapNotNull { it.id }
+                        
+                        allIds.addAll(pageIds)
+                        
+                        hasMore = pageIds.size == PAGE_SIZE
+                        offset += PAGE_SIZE
+                    }
+                }
+
+                AppLogger.i(TAG, "Found ${allIds.size} soft-deleted blog IDs from server")
+                Result.success(allIds)
+
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error fetching deleted blog IDs", e)
+                // Don't fail sync for this, just return empty list
+                Result.success(emptyList())
             }
         }
     }

@@ -313,6 +313,28 @@ class SyncManager @Inject constructor(
                     }
                 )
                 
+                // STEP 1.5: Handle server-side deletions
+                // Fetch blogs marked as is_deleted=true on server since last sync
+                var deletedCount = 0
+                updateProgress("Checking deletions...")
+                
+                val deletedIds = supabaseApi.getDeletedBlogIds(lastSyncTime).getOrNull() ?: emptyList()
+                
+                if (deletedIds.isNotEmpty()) {
+                    AppLogger.i(TAG, "Found ${deletedIds.size} soft-deleted blogs from server")
+                    
+                    // Get prefixes of blogs being deleted for index update
+                    for (id in deletedIds) {
+                        blogRepository.getTitlePrefixById(id).getOrNull()?.let { prefix ->
+                            affectedPrefixes.add(prefix)
+                        }
+                    }
+                    
+                    // Hard delete from local database (server already marked them as deleted)
+                    deletedCount = blogRepository.deleteBlogsByIds(deletedIds).getOrNull() ?: 0
+                    AppLogger.i(TAG, "Removed $deletedCount locally that were deleted on server")
+                }
+                
                 // STEP 2: Upload local changes to server
                 // ONLY upload if:
                 // - lastSyncTime > 0 (not first sync)
@@ -350,7 +372,7 @@ class SyncManager @Inject constructor(
                 }
                 
                 // STEP 5: Notify data changed once (not per-blog) to refresh UI
-                if (receivedFromServer > 0) {
+                if (receivedFromServer > 0 || deletedCount > 0) {
                     blogRepository.notifyDataChanged()
                 }
                 
@@ -362,9 +384,9 @@ class SyncManager @Inject constructor(
                 val result = SyncResult(
                     downloaded = downloadedCount,
                     uploaded = uploadedCount,
-                    deleted = 0,
+                    deleted = deletedCount,
                     isSuccess = true,
-                    message = if (downloadedCount == 0 && uploadedCount == 0) "Already in sync" else "Sync completed"
+                    message = if (downloadedCount == 0 && uploadedCount == 0 && deletedCount == 0) "Already in sync" else "Sync completed"
                 )
                 
                 AppLogger.i(TAG, "Incremental sync complete: ${result.toDisplayString()}")
@@ -618,10 +640,10 @@ class SyncManager @Inject constructor(
                     )
                 }
                 
-                AppLogger.d(TAG, "Deleting blog from server: $blogId")
+                AppLogger.d(TAG, "Soft deleting blog on server: $blogId")
                 
-                // Move to recycle bin on server
-                supabaseApi.moveToRecycleBin(blogId)
+                // Soft delete on server (set is_deleted = true)
+                supabaseApi.softDeleteOnServer(blogId)
                 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting blog from server: $blogId", e)

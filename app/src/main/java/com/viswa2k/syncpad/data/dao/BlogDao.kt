@@ -47,6 +47,23 @@ interface BlogDao {
     @Query("DELETE FROM blogs")
     suspend fun deleteAll(): Int
 
+    @Query("DELETE FROM blogs WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>): Int
+
+    /**
+     * Soft delete a blog by setting is_deleted = true.
+     * Updates updated_at and deleted_at timestamps.
+     */
+    @Query("UPDATE blogs SET is_deleted = 1, deleted_at = :deletedAt, updated_at = :updatedAt WHERE id = :id")
+    suspend fun softDeleteById(id: Long, deletedAt: Long, updatedAt: Long): Int
+
+    /**
+     * Get blogs that were soft-deleted after a timestamp.
+     * Used during sync to detect server-side deletions.
+     */
+    @Query("SELECT id FROM blogs WHERE is_deleted = 1 AND updated_at > :afterTimestamp")
+    suspend fun getDeletedAfter(afterTimestamp: Long): List<Long>
+
     // ============================================
     // QUERY OPERATIONS
     // ============================================
@@ -57,13 +74,16 @@ interface BlogDao {
     @Query("SELECT * FROM blogs WHERE id = :id")
     fun getByIdFlow(id: Long): Flow<BlogEntity?>
 
-    @Query("SELECT COUNT(*) FROM blogs")
+    @Query("SELECT COUNT(*) FROM blogs WHERE is_deleted = 0")
     suspend fun getCount(): Int
 
-    @Query("SELECT COUNT(*) FROM blogs")
+    @Query("SELECT COUNT(*) FROM blogs WHERE is_deleted = 0")
     fun getCountFlow(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM blogs WHERE UPPER(SUBSTR(title, 1, :prefixLength)) = UPPER(:prefix)")
+    @Query("SELECT id FROM blogs WHERE is_deleted = 0")
+    suspend fun getAllIds(): List<Long>
+
+    @Query("SELECT COUNT(*) FROM blogs WHERE UPPER(SUBSTR(title, 1, :prefixLength)) = UPPER(:prefix) AND is_deleted = 0")
     suspend fun getCountByPrefix(prefix: String, prefixLength: Int = prefix.length): Int
 
     // ============================================
@@ -78,6 +98,7 @@ interface BlogDao {
     @Query("""
         SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
         FROM blogs
+        WHERE is_deleted = 0
         ORDER BY title_prefix ASC, title ASC, id ASC
         LIMIT :pageSize
     """)
@@ -90,9 +111,11 @@ interface BlogDao {
     @Query("""
         SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
         FROM blogs
-        WHERE (title_prefix > :cursorPrefix)
+        WHERE is_deleted = 0 AND (
+           (title_prefix > :cursorPrefix)
            OR (title_prefix = :cursorPrefix AND title > :cursorTitle)
            OR (title_prefix = :cursorPrefix AND title = :cursorTitle AND id > :cursorId)
+        )
         ORDER BY title_prefix ASC, title ASC, id ASC
         LIMIT :pageSize
     """)
@@ -109,7 +132,7 @@ interface BlogDao {
     @Query("""
         SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
         FROM blogs
-        WHERE title_prefix LIKE :prefixPattern
+        WHERE title_prefix LIKE :prefixPattern AND is_deleted = 0
         ORDER BY title_prefix ASC, title ASC, id ASC
         LIMIT :pageSize
     """)
@@ -121,7 +144,7 @@ interface BlogDao {
      */
     @Query("""
         SELECT id FROM blogs
-        WHERE title_prefix LIKE :prefixPattern
+        WHERE title_prefix LIKE :prefixPattern AND is_deleted = 0
         ORDER BY title_prefix ASC, title ASC, id ASC
         LIMIT 1
     """)
@@ -140,6 +163,7 @@ interface BlogDao {
                COUNT(*) as count,
                MIN(id) as firstId
         FROM blogs
+        WHERE is_deleted = 0
         GROUP BY UPPER(SUBSTR(title, 1, :depth))
         ORDER BY prefix ASC
     """)
@@ -155,7 +179,7 @@ interface BlogDao {
                COUNT(*) as count,
                MIN(id) as firstId
         FROM blogs
-        WHERE UPPER(SUBSTR(title, 1, :parentLength)) = :parentPrefix
+        WHERE UPPER(SUBSTR(title, 1, :parentLength)) = :parentPrefix AND is_deleted = 0
         GROUP BY UPPER(SUBSTR(title, 1, :childDepth))
         ORDER BY prefix ASC
     """)
@@ -191,7 +215,7 @@ interface BlogDao {
     @Query("""
         SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
         FROM blogs
-        WHERE title LIKE :query
+        WHERE title LIKE :query AND is_deleted = 0
         ORDER BY title ASC
         LIMIT :limit
     """)
@@ -203,7 +227,7 @@ interface BlogDao {
     @Query("""
         SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
         FROM blogs
-        WHERE title LIKE :query OR content LIKE :query
+        WHERE (title LIKE :query OR content LIKE :query) AND is_deleted = 0
         ORDER BY title ASC
         LIMIT :limit
     """)
@@ -217,6 +241,7 @@ interface BlogDao {
         SELECT id, title, title_prefix as titlePrefix, created_at as createdAt
         FROM blogs
         WHERE (title LIKE :query OR (:includeContent = 1 AND content LIKE :query))
+          AND is_deleted = 0
           AND (:createdAfter = 0 OR created_at > :createdAfter)
           AND (:createdBefore = 0 OR created_at < :createdBefore)
           AND (:updatedAfter = 0 OR updated_at > :updatedAfter)

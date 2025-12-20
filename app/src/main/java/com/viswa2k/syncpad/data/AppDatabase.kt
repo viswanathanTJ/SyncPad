@@ -25,7 +25,7 @@ import com.viswa2k.syncpad.data.entity.SyncMetaEntity
         PrefixIndexEntity::class,
         SyncMetaEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {

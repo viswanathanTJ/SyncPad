@@ -125,12 +125,13 @@ class BlogDetailViewModel @Inject constructor(
                     return@launch
                 }
                 
-                // STEP 2: Delete locally FIRST (fast UI response)
-                val localResult = blogRepository.deleteBlog(blogId)
+                // STEP 2: Soft delete locally FIRST (fast UI response)
+                // This sets is_deleted = true, which will be synced to server
+                val localResult = blogRepository.softDeleteBlog(blogId)
                 
                 localResult.fold(
                     onSuccess = {
-                        AppLogger.i(TAG, "Blog deleted locally: $blogId")
+                        AppLogger.i(TAG, "Blog soft deleted locally: $blogId")
                         
                         // STEP 3: Reindex the affected prefix
                         blogPrefix?.let { prefix ->

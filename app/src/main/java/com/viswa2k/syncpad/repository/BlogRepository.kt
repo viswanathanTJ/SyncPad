@@ -158,7 +158,28 @@ class BlogRepository @Inject constructor(
     }
 
     /**
-     * Delete a blog by ID.
+     * Soft delete a blog by ID.
+     * Sets is_deleted = true instead of actually deleting.
+     * This allows sync to propagate the deletion to server.
+     */
+    suspend fun softDeleteBlog(id: Long): Result<Int> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val now = System.currentTimeMillis()
+                val rowsUpdated = blogDao.softDeleteById(id, deletedAt = now, updatedAt = now)
+                AppLogger.i(TAG, "Soft deleted blog id: $id, rows: $rowsUpdated")
+                _dataChanged.emit(Unit)
+                Result.success(rowsUpdated)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error soft deleting blog id: $id", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Hard delete a blog by ID.
+     * Actually removes from database. Used during sync cleanup.
      */
     suspend fun deleteBlog(id: Long): Result<Int> {
         return withContext(Dispatchers.IO) {
@@ -169,6 +190,22 @@ class BlogRepository @Inject constructor(
                 Result.success(rowsDeleted)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting blog id: $id", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Get IDs of blogs soft-deleted after a timestamp.
+     * Used during sync to detect local deletions to propagate.
+     */
+    suspend fun getDeletedAfter(afterTimestamp: Long): Result<List<Long>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val ids = blogDao.getDeletedAfter(afterTimestamp)
+                Result.success(ids)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting deleted blogs after $afterTimestamp", e)
                 Result.failure(e)
             }
         }
@@ -187,6 +224,27 @@ class BlogRepository @Inject constructor(
                 Result.success(rowsDeleted)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting all blogs", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Delete multiple blogs by their IDs.
+     * Used during sync to remove server-deleted items.
+     * Does NOT emit dataChanged - caller should do so after batch operations.
+     */
+    suspend fun deleteBlogsByIds(ids: List<Long>): Result<Int> {
+        return withContext(Dispatchers.IO) {
+            try {
+                if (ids.isEmpty()) {
+                    return@withContext Result.success(0)
+                }
+                val rowsDeleted = blogDao.deleteByIds(ids)
+                AppLogger.i(TAG, "Deleted ${rowsDeleted} blogs by IDs")
+                Result.success(rowsDeleted)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error deleting blogs by IDs", e)
                 Result.failure(e)
             }
         }
@@ -221,6 +279,22 @@ class BlogRepository @Inject constructor(
                 AppLogger.e(TAG, "Error in blog count flow", e)
                 throw e
             }
+    }
+
+    /**
+     * Get all blog IDs.
+     * Used for comparing with server IDs to detect deletions.
+     */
+    suspend fun getAllIds(): Result<List<Long>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val ids = blogDao.getAllIds()
+                Result.success(ids)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting all blog IDs", e)
+                Result.failure(e)
+            }
+        }
     }
 
     /**
