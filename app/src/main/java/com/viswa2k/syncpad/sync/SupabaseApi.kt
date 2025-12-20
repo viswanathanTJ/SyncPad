@@ -269,18 +269,20 @@ class SupabaseApi @Inject constructor() {
 
                 val response = client.newCall(request).execute()
 
-                if (!response.isSuccessful) {
-                    val errorBody = response.body?.string() ?: "Unknown error"
-                    AppLogger.e(TAG, "API error: ${response.code} - $errorBody")
-                    return@withContext Result.failure(Exception("Failed to get count: ${response.code}"))
+                response.use { resp ->
+                    if (!resp.isSuccessful) {
+                        val errorBody = resp.body?.string() ?: "Unknown error"
+                        AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+                        return@withContext Result.failure(Exception("Failed to get count: ${resp.code}"))
+                    }
+
+                    // Parse Content-Range header: "0-0/72000"
+                    val contentRange = resp.header("Content-Range")
+                    val count = contentRange?.substringAfterLast("/")?.toIntOrNull() ?: 0
+
+                    AppLogger.i(TAG, "Server count: $count blogs to sync")
+                    Result.success(count)
                 }
-
-                // Parse Content-Range header: "0-0/72000"
-                val contentRange = response.header("Content-Range")
-                val count = contentRange?.substringAfterLast("/")?.toIntOrNull() ?: 0
-
-                AppLogger.i(TAG, "Server count: $count blogs to sync")
-                Result.success(count)
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error getting server count", e)
@@ -604,22 +606,24 @@ class SupabaseApi @Inject constructor() {
 
                     val response = client.newCall(request).execute()
 
-                    if (!response.isSuccessful) {
-                        val errorBody = response.body?.string() ?: "Unknown error"
-                        AppLogger.e(TAG, "API error: ${response.code} - $errorBody")
-                        return@withContext Result.failure(Exception("Failed to fetch blogs: ${response.code}"))
-                    }
+                    response.use { resp ->
+                        if (!resp.isSuccessful) {
+                            val errorBody = resp.body?.string() ?: "Unknown error"
+                            AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+                            return@withContext Result.failure(Exception("Failed to fetch blogs: ${resp.code}"))
+                        }
 
-                    val body = response.body?.string() ?: "[]"
-                    val blogs = gson.fromJson(body, Array<BlogDto>::class.java).toList()
-                    
-                    allBlogs.addAll(blogs)
-                    
-                    // Check if we need to fetch more pages
-                    hasMore = blogs.size == PAGE_SIZE
-                    offset += PAGE_SIZE
-                    
-                    AppLogger.i(TAG, "Fetched page: ${blogs.size} blogs, total: ${allBlogs.size}")
+                        val body = resp.body?.string() ?: "[]"
+                        val blogs = gson.fromJson(body, Array<BlogDto>::class.java).toList()
+                        
+                        allBlogs.addAll(blogs)
+                        
+                        // Check if we need to fetch more pages
+                        hasMore = blogs.size == PAGE_SIZE
+                        offset += PAGE_SIZE
+                        
+                        AppLogger.i(TAG, "Fetched page: ${blogs.size} blogs, total: ${allBlogs.size}")
+                    }
                 }
                 
                 AppLogger.i(TAG, "Downloaded ${allBlogs.size} total blogs from server")
@@ -661,18 +665,20 @@ class SupabaseApi @Inject constructor() {
 
                 val response = client.newCall(request).execute()
 
-                if (!response.isSuccessful) {
-                    val errorBody = response.body?.string() ?: "Unknown error"
-                    AppLogger.e(TAG, "API error: ${response.code} - $errorBody")
-                    return@withContext Result.failure(Exception("Failed to upload blog: ${response.code}"))
-                }
+                response.use { resp ->
+                    if (!resp.isSuccessful) {
+                        val errorBody = resp.body?.string() ?: "Unknown error"
+                        AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+                        return@withContext Result.failure(Exception("Failed to upload blog: ${resp.code}"))
+                    }
 
-                val body = response.body?.string() ?: "[]"
-                val result = gson.fromJson(body, Array<BlogDto>::class.java).firstOrNull()
-                    ?: return@withContext Result.failure(Exception("No result returned"))
-                
-                AppLogger.i(TAG, "Uploaded blog: ${result.title}")
-                Result.success(result)
+                    val body = resp.body?.string() ?: "[]"
+                    val result = gson.fromJson(body, Array<BlogDto>::class.java).firstOrNull()
+                        ?: return@withContext Result.failure(Exception("No result returned"))
+                    
+                    AppLogger.i(TAG, "Uploaded blog: ${result.title}")
+                    Result.success(result)
+                }
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error upserting blog", e)
@@ -718,12 +724,14 @@ class SupabaseApi @Inject constructor() {
 
                     val response = client.newCall(request).execute()
 
-                    if (!response.isSuccessful) {
-                        val errorBody = response.body?.string() ?: "Unknown error"
-                        AppLogger.e(TAG, "API error: ${response.code} - $errorBody")
-                        // Continue with other batches even if one fails
-                    } else {
-                        totalUploaded += batch.size
+                    response.use { resp ->
+                        if (!resp.isSuccessful) {
+                            val errorBody = resp.body?.string() ?: "Unknown error"
+                            AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+                            // Continue with other batches even if one fails
+                        } else {
+                            totalUploaded += batch.size
+                        }
                     }
                 }
 
