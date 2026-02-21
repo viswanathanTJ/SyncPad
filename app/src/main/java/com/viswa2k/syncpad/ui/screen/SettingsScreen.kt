@@ -34,9 +34,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -58,10 +60,10 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
-    val settings by viewModel.settings.collectAsState()
-    val infoState by viewModel.infoState.collectAsState()
-    val syncState by viewModel.syncState.collectAsState()
-    val indexState by viewModel.indexState.collectAsState()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val infoState by viewModel.infoState.collectAsStateWithLifecycle()
+    val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val indexState by viewModel.indexState.collectAsStateWithLifecycle()
     
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -172,9 +174,13 @@ fun SettingsScreen(
                     title = "Font Size",
                     subtitle = "${settings.fontSize}sp"
                 ) {
+                    var fontSizeSlider by remember(settings.fontSize) {
+                        mutableFloatStateOf(settings.fontSize.toFloat())
+                    }
                     Slider(
-                        value = settings.fontSize.toFloat(),
-                        onValueChange = { viewModel.setFontSize(it.toInt()) },
+                        value = fontSizeSlider,
+                        onValueChange = { fontSizeSlider = it },
+                        onValueChangeFinished = { viewModel.setFontSize(fontSizeSlider.toInt()) },
                         valueRange = SettingsRepository.MIN_FONT_SIZE.toFloat()..SettingsRepository.MAX_FONT_SIZE.toFloat(),
                         steps = (SettingsRepository.MAX_FONT_SIZE - SettingsRepository.MIN_FONT_SIZE) / 2,
                         modifier = Modifier.fillMaxWidth()
@@ -244,9 +250,13 @@ fun SettingsScreen(
                     title = "Max Prefix Depth",
                     subtitle = "${settings.maxDepth} characters"
                 ) {
+                    var maxDepthSlider by remember(settings.maxDepth) {
+                        mutableFloatStateOf(settings.maxDepth.toFloat())
+                    }
                     Slider(
-                        value = settings.maxDepth.toFloat(),
-                        onValueChange = { viewModel.setMaxDepth(it.toInt()) },
+                        value = maxDepthSlider,
+                        onValueChange = { maxDepthSlider = it },
+                        onValueChangeFinished = { viewModel.setMaxDepth(maxDepthSlider.toInt()) },
                         valueRange = 1f..5f,
                         steps = 3,
                         modifier = Modifier.fillMaxWidth()

@@ -47,7 +47,7 @@ import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,9 +79,9 @@ fun SearchScreen(
     onNavigateBack: () -> Unit,
     viewModel: SearchViewModel = hiltViewModel()
 ) {
-    val searchState by viewModel.searchState.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val searchFilters by viewModel.searchFilters.collectAsState()
+    val searchState by viewModel.searchState.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val searchFilters by viewModel.searchFilters.collectAsStateWithLifecycle()
     
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current

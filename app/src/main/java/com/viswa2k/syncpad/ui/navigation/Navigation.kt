@@ -1,6 +1,8 @@
 package com.viswa2k.syncpad.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.Lifecycle
+import androidx.navigation.NavController
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -28,6 +30,15 @@ object Routes {
 }
 
 /**
+ * Safe navigation that prevents duplicate destinations when tapping rapidly.
+ */
+private fun NavController.navigateSafe(route: String) {
+    if (currentBackStackEntry?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) == true) {
+        navigate(route)
+    }
+}
+
+/**
  * Main navigation graph.
  */
 @Composable
@@ -40,16 +51,16 @@ fun AppNavigation(navController: NavHostController) {
         composable(Routes.HOME) {
             HomeScreen(
                 onBlogClick = { blogId ->
-                    navController.navigate(Routes.detail(blogId))
+                    navController.navigateSafe(Routes.detail(blogId))
                 },
                 onAddClick = {
-                    navController.navigate(Routes.ADD)
+                    navController.navigateSafe(Routes.ADD)
                 },
                 onSettingsClick = {
-                    navController.navigate(Routes.SETTINGS)
+                    navController.navigateSafe(Routes.SETTINGS)
                 },
                 onSearchClick = {
-                    navController.navigate(Routes.SEARCH)
+                    navController.navigateSafe(Routes.SEARCH)
                 }
             )
         }
@@ -64,7 +75,7 @@ fun AppNavigation(navController: NavHostController) {
             DetailScreen(
                 onNavigateBack = { navController.popBackStack() },
                 onEditClick = { blogId ->
-                    navController.navigate(Routes.edit(blogId))
+                    navController.navigateSafe(Routes.edit(blogId))
                 }
             )
         }
@@ -105,7 +116,7 @@ fun AppNavigation(navController: NavHostController) {
         composable(Routes.SEARCH) {
             SearchScreen(
                 onBlogClick = { blogId ->
-                    navController.navigate(Routes.detail(blogId))
+                    navController.navigateSafe(Routes.detail(blogId))
                 },
                 onNavigateBack = { navController.popBackStack() }
             )

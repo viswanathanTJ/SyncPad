@@ -82,10 +82,6 @@ class PrefixIndexRepository @Inject constructor(
     fun getAlphabetIndexFlow(): Flow<List<PrefixIndexEntity>> {
         return prefixIndexDao.getAlphabetIndexFlow()
             .flowOn(Dispatchers.IO)
-            .catch { e ->
-                AppLogger.e(TAG, "Error in alphabet index flow", e)
-                throw e
-            }
     }
 
     /**

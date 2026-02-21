@@ -1,9 +1,9 @@
 package com.viswa2k.syncpad.data
 
-import android.content.Context
 import androidx.room.Database
-import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.viswa2k.syncpad.data.dao.BlogDao
 import com.viswa2k.syncpad.data.dao.PrefixIndexDao
 import com.viswa2k.syncpad.data.dao.SyncMetaDao
@@ -13,7 +13,7 @@ import com.viswa2k.syncpad.data.entity.SyncMetaEntity
 
 /**
  * Room database for SyncPad application.
- * 
+ *
  * Tables:
  * - blogs: Main blog posts table
  * - prefix_index: LOCAL ONLY derived index for navigation
@@ -25,7 +25,7 @@ import com.viswa2k.syncpad.data.entity.SyncMetaEntity
         PrefixIndexEntity::class,
         SyncMetaEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -37,27 +37,17 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         const val DATABASE_NAME = "syncpad.db"
 
-        @Volatile
-        private var INSTANCE: AppDatabase? = null
-
-        /**
-         * Get the singleton database instance.
-         * Uses double-checked locking for thread safety.
-         */
-        fun getInstance(context: Context): AppDatabase {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: buildDatabase(context).also { INSTANCE = it }
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_blogs_is_deleted_title_prefix_title_id` " +
+                    "ON `blogs` (`is_deleted`, `title_prefix`, `title`, `id`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_blogs_is_deleted_updated_at_id` " +
+                    "ON `blogs` (`is_deleted`, `updated_at`, `id`)"
+                )
             }
-        }
-
-        private fun buildDatabase(context: Context): AppDatabase {
-            return Room.databaseBuilder(
-                context.applicationContext,
-                AppDatabase::class.java,
-                DATABASE_NAME
-            )
-                .fallbackToDestructiveMigration()
-                .build()
         }
     }
 }

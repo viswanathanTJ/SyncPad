@@ -9,6 +9,7 @@ import com.viswa2k.syncpad.ui.state.UiState
 import com.viswa2k.syncpad.util.AppLogger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -98,6 +99,8 @@ class SearchViewModel @Inject constructor(
         performSearch(_searchQuery.value)
     }
 
+    private var searchJob: Job? = null
+
     /**
      * Perform the search based on current query and filters.
      */
@@ -107,7 +110,8 @@ class SearchViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
             try {
                 _searchState.value = UiState.Loading
                 

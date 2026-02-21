@@ -34,7 +34,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,8 +65,8 @@ fun DetailScreen(
     onEditClick: (Long) -> Unit,
     viewModel: BlogDetailViewModel = hiltViewModel()
 ) {
-    val blogState by viewModel.blogState.collectAsState()
-    val deleteState by viewModel.deleteState.collectAsState()
+    val blogState by viewModel.blogState.collectAsStateWithLifecycle()
+    val deleteState by viewModel.deleteState.collectAsStateWithLifecycle()
     
     val snackbarHostState = remember { SnackbarHostState() }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -154,8 +154,9 @@ fun DetailScreen(
                     }
                 },
                 actions = {
-                    if (blogState is UiState.Success) {
-                        val blogId = (blogState as UiState.Success).data.id
+                    val currentBlogState = blogState
+                    if (currentBlogState is UiState.Success) {
+                        val blogId = currentBlogState.data.id
                         // Copy button - no snackbar needed, Android 13+ shows system confirmation
                         IconButton(onClick = { 
                             copyToClipboard()

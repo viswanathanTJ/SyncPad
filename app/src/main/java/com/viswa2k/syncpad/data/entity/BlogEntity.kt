@@ -27,7 +27,9 @@ import androidx.room.PrimaryKey
         Index(value = ["title_prefix"]),
         Index(value = ["created_at"]),
         Index(value = ["updated_at"]),
-        Index(value = ["is_deleted"])
+        Index(value = ["is_deleted"]),
+        Index(value = ["is_deleted", "title_prefix", "title", "id"]),
+        Index(value = ["is_deleted", "updated_at", "id"])
     ]
 )
 data class BlogEntity(
