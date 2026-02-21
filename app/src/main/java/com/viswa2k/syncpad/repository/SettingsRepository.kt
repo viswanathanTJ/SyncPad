@@ -78,6 +78,9 @@ class SettingsRepository @Inject constructor(
      * Set the theme.
      */
     suspend fun setTheme(theme: String): Result<Unit> {
+        if (theme !in listOf(THEME_LIGHT, THEME_DARK, THEME_SYSTEM)) {
+            return Result.failure(IllegalArgumentException("Invalid theme: $theme"))
+        }
         return try {
             context.dataStore.edit { preferences ->
                 preferences[KEY_THEME] = theme

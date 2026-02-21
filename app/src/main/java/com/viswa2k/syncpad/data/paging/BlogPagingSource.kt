@@ -1,10 +1,10 @@
 package com.viswa2k.syncpad.data.paging
 
-import android.util.Log
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
 import com.viswa2k.syncpad.data.dao.BlogDao
 import com.viswa2k.syncpad.data.model.BlogListItem
+import com.viswa2k.syncpad.util.AppLogger
 
 /**
  * Sort order for blog list.
@@ -16,7 +16,7 @@ enum class SortOrder {
 
 /**
  * Cursor-based PagingSource for blogs.
- * 
+ *
  * IMPORTANT:
  * - NEVER uses OFFSET for stable paging at 200k+ rows
  * - Only loads id, title, created_at (NEVER content)
@@ -37,7 +37,7 @@ class BlogPagingSource(
         return state.anchorPosition?.let { anchorPosition ->
             state.closestItemToPosition(anchorPosition)?.let { item ->
                 BlogCursor(
-                    titlePrefix = item.title.take(10).uppercase(),
+                    titlePrefix = item.titlePrefix,
                     title = item.title,
                     id = item.id,
                     updatedAt = item.updatedAt
@@ -49,7 +49,7 @@ class BlogPagingSource(
     override suspend fun load(params: LoadParams<BlogCursor>): LoadResult<BlogCursor, BlogListItem> {
         return try {
             val cursor = params.key
-            val pageSize = params.loadSize.coerceAtMost(PAGE_SIZE)
+            val pageSize = params.loadSize
 
             val items = when {
                 // Prefix filter always uses alphabetical
@@ -57,7 +57,8 @@ class BlogPagingSource(
                     if (cursor == null) {
                         blogDao.getByPrefixPattern("$prefixFilter%", pageSize)
                     } else {
-                        blogDao.getNextPage(
+                        blogDao.getNextPageByPrefix(
+                            prefixPattern = "$prefixFilter%",
                             cursorPrefix = cursor.titlePrefix,
                             cursorTitle = cursor.title,
                             cursorId = cursor.id,
@@ -97,7 +98,7 @@ class BlogPagingSource(
             } else {
                 items.lastOrNull()?.let { lastItem ->
                     BlogCursor(
-                        titlePrefix = lastItem.title.take(10).uppercase(),
+                        titlePrefix = lastItem.titlePrefix,
                         title = lastItem.title,
                         id = lastItem.id,
                         updatedAt = lastItem.updatedAt
@@ -111,7 +112,7 @@ class BlogPagingSource(
                 nextKey = nextCursor
             )
         } catch (e: Exception) {
-            Log.e(TAG, "Error loading page: ${e.message}", e)
+            AppLogger.e(TAG, "Error loading page: ${e.message}", e)
             LoadResult.Error(e)
         }
     }

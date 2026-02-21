@@ -94,6 +94,40 @@ class SettingsViewModel @Inject constructor(
     private val _indexState = MutableStateFlow<IndexState>(IndexState.Idle)
     val indexState: StateFlow<IndexState> = _indexState.asStateFlow()
 
+    init {
+        // Observe sync progress for hard sync UI updates
+        viewModelScope.launch {
+            syncManager.syncProgress.collect { progress ->
+                if (progress != null && _syncState.value.isSyncing) {
+                    _syncState.value = SyncState.Syncing(
+                        message = progress.first,
+                        count = progress.second
+                    )
+                }
+            }
+        }
+
+        // Observe sync results from syncs launched via app scope (e.g., hard sync)
+        viewModelScope.launch {
+            syncManager.lastSyncResult.collect { result ->
+                if (result != null && _syncState.value.isSyncing) {
+                    result.fold(
+                        onSuccess = { syncResult ->
+                            _syncState.value = SyncState.Success(syncResult)
+                        },
+                        onFailure = { e ->
+                            _syncState.value = SyncState.Error(
+                                message = "Sync failed: ${e.message}",
+                                exception = e
+                            )
+                        }
+                    )
+                    syncManager.clearLastSyncResult()
+                }
+            }
+        }
+    }
+
     // ============================================
     // SETTINGS ACTIONS
     // ============================================

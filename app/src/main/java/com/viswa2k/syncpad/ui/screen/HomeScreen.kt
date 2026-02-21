@@ -55,7 +55,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -105,24 +105,21 @@ fun HomeScreen(
     viewModel: BlogListViewModel = hiltViewModel()
 ) {
     val pagedBlogs = viewModel.pagedBlogs.collectAsLazyPagingItems()
-    val alphabetIndex by viewModel.alphabetIndex.collectAsState()
-    val prefixFilter by viewModel.prefixFilter.collectAsState()
-    val blogCount by viewModel.blogCount.collectAsState()
-    val showBottomIndex by viewModel.showBottomIndex.collectAsState()
-    val fontSize by viewModel.fontSize.collectAsState()
-    val maxDepth by viewModel.maxDepth.collectAsState()
-    val indexState by viewModel.indexState.collectAsState()
-    val syncState by viewModel.syncState.collectAsState()
-    val sortOrder by viewModel.sortOrder.collectAsState()
-    val showSidebar by viewModel.showSidebar.collectAsState()
-    val showQuickNavFab by viewModel.showQuickNavFab.collectAsState()
+    val alphabetIndex by viewModel.alphabetIndex.collectAsStateWithLifecycle()
+    val prefixFilter by viewModel.prefixFilter.collectAsStateWithLifecycle()
+    val blogCount by viewModel.blogCount.collectAsStateWithLifecycle()
+    val showBottomIndex by viewModel.showBottomIndex.collectAsStateWithLifecycle()
+    val fontSize by viewModel.fontSize.collectAsStateWithLifecycle()
+    val maxDepth by viewModel.maxDepth.collectAsStateWithLifecycle()
+    val indexState by viewModel.indexState.collectAsStateWithLifecycle()
+    val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val sortOrder by viewModel.sortOrder.collectAsStateWithLifecycle()
+    val showSidebar by viewModel.showSidebar.collectAsStateWithLifecycle()
+    val showQuickNavFab by viewModel.showQuickNavFab.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    
-    // Auto-sync only on first install (when never synced before)
-    var hasAutoSynced by remember { mutableStateOf(false) }
     
     // Quick navigation popup state
     var showQuickNav by remember { mutableStateOf(false) }
@@ -140,14 +137,6 @@ fun HomeScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-    
-    // Initial sync on first composition (for first install detection)
-    LaunchedEffect(Unit) {
-        if (!hasAutoSynced) {
-            hasAutoSynced = true
-            viewModel.performAutoSync()
         }
     }
     
@@ -484,9 +473,6 @@ fun HomeScreen(
                                 }
                             }
                             
-                            // Track current section for headers in list
-                            var currentSectionChar: String? = null
-                            
                             items(
                                 count = pagedBlogs.itemCount,
                                 key = pagedBlogs.itemKey { it.id },
@@ -498,18 +484,24 @@ fun HomeScreen(
                                     if (sectionPrefix.isEmpty()) {
                                         val firstChar = blog.title.firstOrNull()
                                             ?.uppercaseChar()?.toString() ?: "#"
-                                        
-                                        if (firstChar != currentSectionChar) {
-                                            currentSectionChar = firstChar
+
+                                        // Index-based comparison: show header if this is the first item
+                                        // or if the previous item has a different first char
+                                        val prevFirstChar = if (index > 0) {
+                                            pagedBlogs[index - 1]?.title?.firstOrNull()
+                                                ?.uppercaseChar()?.toString() ?: "#"
+                                        } else null
+
+                                        if (prevFirstChar == null || firstChar != prevFirstChar) {
                                             // Get count from alphabet index
                                             val charCount = (alphabetIndex as? UiState.Success)?.data
                                                 ?.find { it.prefix == firstChar && it.depth == 1 }?.count ?: 0
-                                            
+
                                             SectionHeader(
                                                 prefix = firstChar,
                                                 count = charCount,
                                                 canDrillDown = maxDepth > 1 && charCount > 50,
-                                                onClick = { 
+                                                onClick = {
                                                     if (charCount > 50) {
                                                         popupPrefix = firstChar
                                                     }
@@ -517,7 +509,7 @@ fun HomeScreen(
                                             )
                                         }
                                     }
-                                    
+
                                     BlogListItemCard(
                                         blog = blog,
                                         fontSize = fontSize,

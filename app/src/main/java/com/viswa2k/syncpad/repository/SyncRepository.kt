@@ -5,7 +5,6 @@ import com.viswa2k.syncpad.data.entity.SyncMetaEntity
 import com.viswa2k.syncpad.util.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -52,10 +51,6 @@ class SyncRepository @Inject constructor(
         return syncMetaDao.getValueFlow(SyncMetaEntity.KEY_LAST_SYNC_TIME)
             .map { it?.toLongOrNull() ?: 0L }
             .flowOn(Dispatchers.IO)
-            .catch { e ->
-                AppLogger.e(TAG, "Error in last sync time flow", e)
-                throw e
-            }
     }
 
     /**
@@ -335,14 +330,7 @@ class SyncRepository @Inject constructor(
     suspend fun clearSyncProgress(): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
-                syncMetaDao.delete(SyncMetaEntity.KEY_SYNC_LAST_ID)
-                syncMetaDao.delete(SyncMetaEntity.KEY_SYNC_TOTAL_EXPECTED)
-                syncMetaDao.upsert(
-                    SyncMetaEntity(
-                        key = SyncMetaEntity.KEY_SYNC_IN_PROGRESS,
-                        value = "false"
-                    )
-                )
+                syncMetaDao.clearSyncProgress()
                 AppLogger.d(TAG, "Cleared sync progress tracking data")
                 Result.success(Unit)
             } catch (e: Exception) {

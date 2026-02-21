@@ -7,8 +7,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
 import com.viswa2k.syncpad.repository.SettingsRepository
@@ -39,7 +39,7 @@ class MainActivity : ComponentActivity() {
             
             setContent {
                 val themeSetting by settingsRepository.getThemeFlow()
-                    .collectAsState(initial = SettingsRepository.DEFAULT_THEME)
+                    .collectAsStateWithLifecycle(initialValue = SettingsRepository.DEFAULT_THEME)
 
                 SyncPadTheme(themeSetting = themeSetting) {
                     Surface(

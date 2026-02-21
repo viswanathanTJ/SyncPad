@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.viswa2k.syncpad.data.entity.SyncMetaEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -45,4 +46,19 @@ interface SyncMetaDao {
 
     @Query("DELETE FROM sync_meta")
     suspend fun deleteAll(): Int
+
+    // ============================================
+    // ATOMIC OPERATIONS
+    // ============================================
+
+    /**
+     * Atomically clear sync progress tracking data.
+     * Deletes sync_last_id and sync_total_expected, sets sync_in_progress to false.
+     */
+    @Transaction
+    suspend fun clearSyncProgress() {
+        delete(SyncMetaEntity.KEY_SYNC_LAST_ID)
+        delete(SyncMetaEntity.KEY_SYNC_TOTAL_EXPECTED)
+        upsert(SyncMetaEntity(key = SyncMetaEntity.KEY_SYNC_IN_PROGRESS, value = "false"))
+    }
 }

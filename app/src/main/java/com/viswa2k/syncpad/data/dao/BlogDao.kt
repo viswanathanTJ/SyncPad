@@ -68,10 +68,10 @@ interface BlogDao {
     // QUERY OPERATIONS
     // ============================================
 
-    @Query("SELECT * FROM blogs WHERE id = :id")
+    @Query("SELECT * FROM blogs WHERE id = :id AND is_deleted = 0")
     suspend fun getById(id: Long): BlogEntity?
 
-    @Query("SELECT * FROM blogs WHERE id = :id")
+    @Query("SELECT * FROM blogs WHERE id = :id AND is_deleted = 0")
     fun getByIdFlow(id: Long): Flow<BlogEntity?>
 
     @Query("SELECT COUNT(*) FROM blogs WHERE is_deleted = 0")
@@ -83,8 +83,8 @@ interface BlogDao {
     @Query("SELECT id FROM blogs WHERE is_deleted = 0")
     suspend fun getAllIds(): List<Long>
 
-    @Query("SELECT COUNT(*) FROM blogs WHERE UPPER(SUBSTR(title, 1, :prefixLength)) = UPPER(:prefix) AND is_deleted = 0")
-    suspend fun getCountByPrefix(prefix: String, prefixLength: Int = prefix.length): Int
+    @Query("SELECT COUNT(*) FROM blogs WHERE title_prefix LIKE :prefix || '%' AND is_deleted = 0")
+    suspend fun getCountByPrefix(prefix: String): Int
 
     // ============================================
     // PAGING QUERIES (Cursor-based, NO OFFSET)
@@ -120,6 +120,29 @@ interface BlogDao {
         LIMIT :pageSize
     """)
     suspend fun getNextPage(
+        cursorPrefix: String,
+        cursorTitle: String,
+        cursorId: Long,
+        pageSize: Int
+    ): List<BlogListItem>
+
+    /**
+     * Get the next page of blogs with a prefix filter applied.
+     * Ensures prefix filter is maintained on continuation pages.
+     */
+    @Query("""
+        SELECT id, title, title_prefix as titlePrefix, created_at as createdAt, updated_at as updatedAt
+        FROM blogs
+        WHERE title_prefix LIKE :prefixPattern AND is_deleted = 0 AND (
+           (title_prefix > :cursorPrefix)
+           OR (title_prefix = :cursorPrefix AND title > :cursorTitle)
+           OR (title_prefix = :cursorPrefix AND title = :cursorTitle AND id > :cursorId)
+        )
+        ORDER BY title_prefix ASC, title ASC, id ASC
+        LIMIT :pageSize
+    """)
+    suspend fun getNextPageByPrefix(
+        prefixPattern: String,
         cursorPrefix: String,
         cursorTitle: String,
         cursorId: Long,
@@ -190,16 +213,16 @@ interface BlogDao {
     // ============================================
 
     /**
-     * Get all distinct prefixes at a specific depth.
+     * Get all distinct prefixes at a specific depth using the indexed title_prefix column.
      * Used for building the prefix index.
      */
     @Query("""
-        SELECT UPPER(SUBSTR(title, 1, :depth)) as prefix,
+        SELECT SUBSTR(title_prefix, 1, :depth) as prefix,
                COUNT(*) as count,
                MIN(id) as firstId
         FROM blogs
         WHERE is_deleted = 0
-        GROUP BY UPPER(SUBSTR(title, 1, :depth))
+        GROUP BY SUBSTR(title_prefix, 1, :depth)
         ORDER BY prefix ASC
     """)
     suspend fun getPrefixCounts(depth: Int): List<PrefixCount>
@@ -210,12 +233,12 @@ interface BlogDao {
      * Example: parentPrefix="C" returns counts for CA, CB, CC, etc.
      */
     @Query("""
-        SELECT UPPER(SUBSTR(title, 1, :childDepth)) as prefix,
+        SELECT SUBSTR(title_prefix, 1, :childDepth) as prefix,
                COUNT(*) as count,
                MIN(id) as firstId
         FROM blogs
-        WHERE UPPER(SUBSTR(title, 1, :parentLength)) = :parentPrefix AND is_deleted = 0
-        GROUP BY UPPER(SUBSTR(title, 1, :childDepth))
+        WHERE SUBSTR(title_prefix, 1, :parentLength) = :parentPrefix AND is_deleted = 0
+        GROUP BY SUBSTR(title_prefix, 1, :childDepth)
         ORDER BY prefix ASC
     """)
     suspend fun getChildPrefixCounts(
@@ -226,10 +249,11 @@ interface BlogDao {
 
     /**
      * Get blogs for sync - those created or updated after a timestamp.
+     * Excludes soft-deleted blogs to prevent re-uploading deleted items.
      */
     @Query("""
         SELECT * FROM blogs
-        WHERE created_at > :afterTimestamp OR updated_at > :afterTimestamp
+        WHERE (created_at > :afterTimestamp OR updated_at > :afterTimestamp) AND is_deleted = 0
         ORDER BY updated_at ASC
     """)
     suspend fun getBlogsForSync(afterTimestamp: Long): List<BlogEntity>
@@ -239,6 +263,13 @@ interface BlogDao {
      */
     @Query("SELECT title_prefix FROM blogs WHERE id = :id")
     suspend fun getTitlePrefixById(id: Long): String?
+
+    /**
+     * Get distinct title prefixes for a batch of blog IDs.
+     * Used to avoid N+1 queries when processing deleted blog prefixes.
+     */
+    @Query("SELECT DISTINCT title_prefix FROM blogs WHERE id IN (:ids)")
+    suspend fun getTitlePrefixesByIds(ids: List<Long>): List<String>
 
     // ============================================
     // SEARCH QUERIES

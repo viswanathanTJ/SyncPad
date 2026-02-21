@@ -18,6 +18,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,7 +36,7 @@ data class SyncResult(
     val message: String = ""
 ) {
     val totalChanges: Int get() = downloaded + uploaded + deleted
-    
+
     fun toDisplayString(): String {
         return when {
             !isSuccess -> message
@@ -44,9 +48,9 @@ data class SyncResult(
 
 /**
  * Sync manager for handling data synchronization with Supabase.
- * 
+ *
  * Uses real HTTP calls to Supabase REST API for sync.
- * 
+ *
  * Sync conditions:
  * - Incremental: created_at > last_sync_time OR updated_at > last_sync_time
  * - Hard sync: clears DB and downloads all from server
@@ -61,7 +65,7 @@ class SyncManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SyncManager"
-        
+
         /**
          * Batch size for database inserts during sync.
          * Balances memory usage (~2.5MB max) vs transaction overhead.
@@ -81,15 +85,15 @@ class SyncManager @Inject constructor(
     /**
      * Runtime flag to prevent concurrent syncs.
      * Different from sync_in_progress in DB which persists across app restarts.
+     * Uses AtomicBoolean for thread-safe compareAndSet.
      */
-    @Volatile
-    private var isSyncRunning = false
+    private val isSyncRunning = AtomicBoolean(false)
 
     /**
      * Check if a sync is currently running (runtime check).
      * Use this to prevent starting another sync.
      */
-    fun isSyncCurrentlyRunning(): Boolean = isSyncRunning
+    fun isSyncCurrentlyRunning(): Boolean = isSyncRunning.get()
 
     /**
      * Progress updates during sync.
@@ -97,14 +101,14 @@ class SyncManager @Inject constructor(
      */
     private val _syncProgress = MutableStateFlow<Pair<String, Int>?>(null)
     val syncProgress: StateFlow<Pair<String, Int>?> = _syncProgress.asStateFlow()
-    
+
     /**
      * Result of the last sync operation (for UI to query after navigation).
      * Used by syncs launched via launchHardSync to communicate results.
      */
     private val _lastSyncResult = MutableStateFlow<Result<SyncResult>?>(null)
     val lastSyncResult: StateFlow<Result<SyncResult>?> = _lastSyncResult.asStateFlow()
-    
+
     /**
      * Clear the last sync result after UI has processed it.
      */
@@ -115,7 +119,7 @@ class SyncManager @Inject constructor(
     private fun updateProgress(message: String, count: Int = 0) {
         _syncProgress.value = Pair(message, count)
     }
-    
+
     private fun clearProgress() {
         _syncProgress.value = null
     }
@@ -129,40 +133,37 @@ class SyncManager @Inject constructor(
             AppLogger.logSecretsMissing("SYNC_BASE_URL")
         }
     }
-    
+
     /**
      * Launch hard sync in application scope.
      * This ensures the sync survives navigation (e.g., from Settings to Home).
      * The result can be observed via lastSyncResult StateFlow.
-     * 
-     * Pre-checks isSyncRunning to prevent race conditions from launching
-     * multiple coroutines before the first one sets the flag.
      */
     fun launchHardSync() {
-        // Pre-check BEFORE launching coroutine to prevent race conditions
-        if (isSyncRunning) {
+        if (!isSyncRunning.compareAndSet(false, true)) {
             AppLogger.w(TAG, "launchHardSync: Sync already running, skipping")
             return
         }
+        // Reset immediately — performHardSync will set it again via its own flow
+        isSyncRunning.set(false)
         syncScope.launch {
             val result = performHardSync()
             _lastSyncResult.value = result
         }
     }
-    
+
     /**
      * Launch incremental sync in application scope.
      * This ensures the sync survives navigation.
      * The result can be observed via lastSyncResult StateFlow.
-     * 
-     * Pre-checks isSyncRunning to prevent race conditions.
      */
     fun launchIncrementalSync() {
-        // Pre-check BEFORE launching coroutine to prevent race conditions
-        if (isSyncRunning) {
+        if (!isSyncRunning.compareAndSet(false, true)) {
             AppLogger.w(TAG, "launchIncrementalSync: Sync already running, skipping")
             return
         }
+        // Reset immediately — performIncrementalSync will set it again via its own flow
+        isSyncRunning.set(false)
         syncScope.launch {
             val result = performIncrementalSync()
             _lastSyncResult.value = result
@@ -176,7 +177,7 @@ class SyncManager @Inject constructor(
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = connectivityManager.activeNetwork ?: return false
         val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        
+
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
@@ -190,70 +191,70 @@ class SyncManager @Inject constructor(
 
     /**
      * Perform an incremental sync.
-     * 
+     *
      * 1. Get last_sync_time from local storage
      * 2. Fetch changes from server where created_at > last_sync_time OR updated_at > last_sync_time
      * 3. Apply changes to local database
      * 4. Push local changes to server
      * 5. Update last_sync_time
-     * 
+     *
      * @return SyncResult with counts of downloaded, uploaded, and deleted items
      */
     suspend fun performIncrementalSync(): Result<SyncResult> {
         return withContext(Dispatchers.IO) {
             try {
-                // Prevent concurrent syncs (runtime check)
-                if (isSyncRunning) {
+                // Prevent concurrent syncs (atomic check-and-set)
+                if (!isSyncRunning.compareAndSet(false, true)) {
                     AppLogger.w(TAG, "Sync already running, skipping")
                     return@withContext Result.failure(
                         Exception("Sync already in progress")
                     )
                 }
-                
+
                 AppLogger.i(TAG, "Starting incremental sync")
-                
+
                 // Check network connectivity
                 if (!isNetworkAvailable()) {
                     AppLogger.w(TAG, "No internet connection available")
+                    isSyncRunning.set(false)
                     return@withContext Result.failure(
                         Exception("No internet connection. Please check your network and try again.")
                     )
                 }
-                
+
                 // Check if sync is configured
                 if (!isSyncConfigured()) {
                     AppLogger.w(TAG, "Sync not configured - API key or base URL missing")
+                    isSyncRunning.set(false)
                     return@withContext Result.failure(
                         Exception("Sync not configured. Please add SYNC_API_KEY and SYNC_BASE_URL to local.properties")
                     )
                 }
-                
-                // Mark sync as running (runtime flag)
-                isSyncRunning = true
-                
+
                 // Mark sync as in progress (for resume on interruption - persisted)
                 syncRepository.setSyncInProgress(true)
                 updateProgress("Connecting...")
-                
+
                 // Get last sync time
                 val lastSyncTime = syncRepository.getLastSyncTime().getOrNull() ?: 0L
-                AppLogger.i(TAG, "Last sync time: $lastSyncTime (${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(lastSyncTime))})")
-                
+                val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                AppLogger.i(TAG, "Last sync time: $lastSyncTime (${dateFormat.format(Date(lastSyncTime))})")
+
                 // Check if we're resuming an interrupted sync
                 val resumeFromId = syncRepository.getSyncLastId().getOrNull()
                 val isResuming = resumeFromId != null && resumeFromId > 0
                 if (isResuming) {
                     AppLogger.i(TAG, "Resuming sync from blog ID: $resumeFromId")
                 }
-                
+
                 var downloadedCount = 0
                 var uploadedCount = 0
                 var receivedFromServer = 0  // Track items received from server (even if duplicates)
                 val affectedPrefixes = mutableSetOf<String>()
-                
+
                 // Get existing local count for comparison
                 val localBlogCount = blogRepository.getBlogCount().getOrNull() ?: 0
-                
+
                 // Get server count for percentage display
                 var totalExpected = syncRepository.getSyncTotalExpected().getOrNull() ?: 0
                 if (totalExpected == 0 && !isResuming) {
@@ -264,49 +265,49 @@ class SyncManager @Inject constructor(
                         AppLogger.i(TAG, "Total expected: $totalExpected blogs to sync")
                     }
                 }
-                
+
                 // For resume: calculate already downloaded items based on local count
                 // This gives accurate progress when resuming an interrupted sync
                 val alreadyDownloaded = if (isResuming) localBlogCount else 0
-                
+
                 // Helper to calculate percentage including already downloaded items
                 fun getPercentage(): Int {
                     val totalProcessed = alreadyDownloaded + receivedFromServer
                     return if (totalExpected > 0) (totalProcessed * 100 / totalExpected) else 0
                 }
-                
+
                 // STEP 1: Download from server using streaming with BATCH INSERTS
                 // Buffer items and insert in batches of BATCH_INSERT_SIZE for 5-10x faster sync
                 // Track lastSyncId only AFTER successful batch insert for safe resume
                 val initialPercent = if (isResuming) getPercentage() else 0
                 val statusText = if (isResuming) "Resuming download... $initialPercent%" else "Downloading notes..."
                 updateProgress(statusText, alreadyDownloaded)
-                
+
                 // Batch buffer - max ~2.5MB memory (500 items × ~5KB each)
                 val batchBuffer = mutableListOf<BlogEntity>()
                 var lastSuccessfulBatchId: Long = resumeFromId ?: 0
-                
+
                 /**
                  * Flush the batch buffer to database.
                  * Updates lastSyncId only after successful insert for safe resume.
                  */
                 suspend fun flushBatch() {
                     if (batchBuffer.isEmpty()) return
-                    
+
                     val batchMaxId = batchBuffer.maxOfOrNull { it.id } ?: 0
-                    
+
                     // Insert batch - all or nothing
                     blogRepository.insertBlogsSilent(batchBuffer).fold(
                         onSuccess = {
                             // Track prefixes for index update
                             batchBuffer.forEach { affectedPrefixes.add(it.titlePrefix) }
-                            
+
                             // Update lastSyncId ONLY after successful batch insert
                             if (batchMaxId > 0) {
                                 lastSuccessfulBatchId = batchMaxId
                                 syncRepository.setSyncLastId(batchMaxId)
                             }
-                            
+
                             AppLogger.d(TAG, "Inserted batch of ${batchBuffer.size} items, lastId=$batchMaxId")
                         },
                         onFailure = { e ->
@@ -314,17 +315,17 @@ class SyncManager @Inject constructor(
                             throw e // Propagate exception to stop sync
                         }
                     )
-                    
+
                     batchBuffer.clear() // Release memory immediately
                 }
-                
+
                 // Use resume-aware streaming if we're resuming
                 val streamResult = if (isResuming && resumeFromId != null) {
                     supabaseApi.streamBlogsAfterId(lastSyncTime, resumeFromId) { blogDto ->
                         val entity = blogDto.toBlogEntity()
                         batchBuffer.add(entity)
                         receivedFromServer++
-                        
+
                         // Flush batch when full
                         if (batchBuffer.size >= BATCH_INSERT_SIZE) {
                             flushBatch()
@@ -338,7 +339,7 @@ class SyncManager @Inject constructor(
                         val entity = blogDto.toBlogEntity()
                         batchBuffer.add(entity)
                         receivedFromServer++
-                        
+
                         // Flush batch when full
                         if (batchBuffer.size >= BATCH_INSERT_SIZE) {
                             flushBatch()
@@ -347,23 +348,23 @@ class SyncManager @Inject constructor(
                         }
                     }
                 }
-                
+
                 // Flush any remaining items in buffer
                 flushBatch()
-                
+
                 streamResult.fold(
                     onSuccess = { count ->
                         AppLogger.i(TAG, "Streamed $count blogs from server for sync (batch insert)")
-                        
+
                         // Count only truly NEW items (not updates)
                         val newBlogCount = blogRepository.getBlogCount().getOrNull() ?: 0
                         downloadedCount = maxOf(0, newBlogCount - localBlogCount)
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Failed to stream from server", e)
-                        isSyncRunning = false
+                        isSyncRunning.set(false)
                         clearProgress()
-                        
+
                         // For network interruptions (app minimized, WiFi lost), keep sync progress
                         // so it auto-resumes on next app launch. For other errors, clear progress.
                         if (e is NetworkInterruptedException) {
@@ -373,46 +374,41 @@ class SyncManager @Inject constructor(
                             // Clear progress to prevent infinite error loops
                             syncRepository.setSyncInProgress(false)
                         }
-                        
+
                         return@withContext Result.failure(e)
                     }
                 )
-                
+
                 // STEP 1.5: Handle server-side deletions
                 // Fetch blogs marked as is_deleted=true on server since last sync
                 var deletedCount = 0
                 updateProgress("Checking deletions...")
-                
+
                 val deletedIds = supabaseApi.getDeletedBlogIds(lastSyncTime).getOrNull() ?: emptyList()
-                
+
                 if (deletedIds.isNotEmpty()) {
                     AppLogger.i(TAG, "Found ${deletedIds.size} soft-deleted blogs from server")
-                    
-                    // Get prefixes of blogs being deleted for index update
-                    for (id in deletedIds) {
-                        blogRepository.getTitlePrefixById(id).getOrNull()?.let { prefix ->
-                            affectedPrefixes.add(prefix)
-                        }
-                    }
-                    
+
+                    // Batch query for prefixes of blogs being deleted
+                    val deletedPrefixes = blogRepository.getTitlePrefixesByIds(deletedIds).getOrNull() ?: emptyList()
+                    affectedPrefixes.addAll(deletedPrefixes)
+
                     // Hard delete from local database (server already marked them as deleted)
                     deletedCount = blogRepository.deleteBlogsByIds(deletedIds).getOrNull() ?: 0
                     AppLogger.i(TAG, "Removed $deletedCount locally that were deleted on server")
                 }
-                
+
                 // STEP 2: Upload local changes to server
-                // ONLY upload if:
-                // - lastSyncTime > 0 (not first sync)
-                // - receivedFromServer == 0 (server returned nothing, so we have local-only changes)
-                if (lastSyncTime > 0 && receivedFromServer == 0) {
+                // Always check for local changes (upload and download are independent)
+                if (lastSyncTime > 0) {
                     val localChanges = blogRepository.getBlogsForSync(lastSyncTime).getOrNull() ?: emptyList()
                     if (localChanges.isNotEmpty()) {
                         AppLogger.d(TAG, "Found ${localChanges.size} local changes to upload")
                         updateProgress("Uploading notes...", localChanges.size)
-                        
+
                         val uploadDtos = localChanges.map { BlogDto.fromBlogEntity(it) }
                         val uploadResult = supabaseApi.upsertBlogs(uploadDtos)
-                        
+
                         uploadResult.fold(
                             onSuccess = { count ->
                                 uploadedCount = count
@@ -425,27 +421,27 @@ class SyncManager @Inject constructor(
                         )
                     }
                 }
-                
+
                 // STEP 3: Update last sync time
                 val now = System.currentTimeMillis()
                 syncRepository.setLastSyncTime(now)
-                
+
                 // STEP 4: Update prefix index for affected prefixes
                 if (affectedPrefixes.isNotEmpty()) {
                     updateProgress("Updating index...", affectedPrefixes.size)
                     prefixIndexRepository.partialUpdate(affectedPrefixes)
                 }
-                
+
                 // STEP 5: Notify data changed once (not per-blog) to refresh UI
                 if (receivedFromServer > 0 || deletedCount > 0) {
                     blogRepository.notifyDataChanged()
                 }
-                
+
                 // STEP 6: Clear sync progress tracking (successful completion)
                 syncRepository.clearSyncProgress()
-                isSyncRunning = false
+                isSyncRunning.set(false)
                 clearProgress()
-                
+
                 val result = SyncResult(
                     downloaded = downloadedCount,
                     uploaded = uploadedCount,
@@ -453,15 +449,15 @@ class SyncManager @Inject constructor(
                     isSuccess = true,
                     message = if (downloadedCount == 0 && uploadedCount == 0 && deletedCount == 0) "Already in sync" else "Sync completed"
                 )
-                
+
                 AppLogger.i(TAG, "Incremental sync complete: ${result.toDisplayString()}")
                 Result.success(result)
-                
+
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error in incremental sync", e)
                 // CRITICAL: Clear both runtime flag AND persisted sync progress
                 // to prevent false "interrupted" detection on next app launch
-                isSyncRunning = false
+                isSyncRunning.set(false)
                 syncRepository.setSyncInProgress(false)
                 clearProgress()
                 Result.failure(e)
@@ -471,77 +467,88 @@ class SyncManager @Inject constructor(
 
     /**
      * Perform a hard sync (clear local and download all from server).
-     * 
-     * 1. Clear local database
-     * 2. Fetch all data from server
-     * 3. Insert into local database
-     * 4. Rebuild prefix index
-     * 5. Reset last_sync_time
-     * 
+     *
+     * 1. Verify server is reachable and has data
+     * 2. Clear local database
+     * 3. Fetch all data from server
+     * 4. Insert into local database
+     * 5. Rebuild prefix index
+     * 6. Reset last_sync_time
+     *
      * @return SyncResult with counts
      */
     suspend fun performHardSync(): Result<SyncResult> {
         return withContext(Dispatchers.IO) {
             try {
-                // Prevent concurrent syncs (runtime check)
-                if (isSyncRunning) {
+                // Prevent concurrent syncs (atomic check-and-set)
+                if (!isSyncRunning.compareAndSet(false, true)) {
                     AppLogger.w(TAG, "Sync already running, skipping hard sync")
                     return@withContext Result.failure(
                         Exception("Sync already in progress")
                     )
                 }
-                
+
                 AppLogger.i(TAG, "Starting hard sync")
-                
+
                 // Check network connectivity
                 if (!isNetworkAvailable()) {
                     AppLogger.w(TAG, "No internet connection available")
+                    isSyncRunning.set(false)
                     return@withContext Result.failure(
                         Exception("No internet connection. Please check your network and try again.")
                     )
                 }
-                
+
                 // Check if sync is configured
                 if (!isSyncConfigured()) {
+                    isSyncRunning.set(false)
                     return@withContext Result.failure(
                         Exception("Sync not configured. Please add SYNC_API_KEY and SYNC_BASE_URL to local.properties")
                     )
                 }
-                
-                // Mark sync as running (runtime flag)
-                isSyncRunning = true
+
                 updateProgress("Preparing hard sync...")
-                
+
+                // Verify server is reachable and get count BEFORE clearing local data
+                updateProgress("Verifying server...")
+                val serverCountResult = supabaseApi.getServerCount(0L)
+                val totalExpected = serverCountResult.getOrNull()
+                if (totalExpected == null) {
+                    // Server unreachable — abort without clearing local data
+                    AppLogger.e(TAG, "Cannot reach server, aborting hard sync to protect local data")
+                    isSyncRunning.set(false)
+                    clearProgress()
+                    return@withContext Result.failure(
+                        Exception("Cannot reach server. Local data preserved.")
+                    )
+                }
+
                 // Get count before clearing for deleted count
                 val previousCount = blogRepository.getBlogCount().getOrNull() ?: 0
-                
-                // Clear local data
+
+                // Clear local data (safe now that we know server is reachable)
                 updateProgress("Clearing local data...")
                 blogRepository.deleteAllBlogs()
                 syncRepository.clearAll()
                 prefixIndexRepository.clearIndex()
-                
+
                 // Notify UI immediately after clearing so list shows empty state
                 blogRepository.notifyDataChanged()
-                
+
                 AppLogger.d(TAG, "Cleared local data ($previousCount items)")
-                
-                // Get server count for progress display
-                updateProgress("Counting records...")
-                val totalExpected = supabaseApi.getServerCount(0L).getOrNull() ?: 0
-                
+
                 // Download all blogs from server using BATCH INSERTS for 5-10x faster sync
                 var downloadedCount = 0
                 updateProgress("Downloading notes...", 0)
-                
+
                 // Batch buffer - max ~2.5MB memory (500 items × ~5KB each)
                 val batchBuffer = mutableListOf<BlogEntity>()
-                
+
                 val streamResult = supabaseApi.streamAllBlogs { blogDto ->
                     val entity = blogDto.toBlogEntity()
                     batchBuffer.add(entity)
                     downloadedCount++
-                    
+
                     // Flush batch when full
                     if (batchBuffer.size >= BATCH_INSERT_SIZE) {
                         blogRepository.insertBlogsSilent(batchBuffer).fold(
@@ -554,12 +561,12 @@ class SyncManager @Inject constructor(
                             }
                         )
                         batchBuffer.clear()
-                        
+
                         val percent = if (totalExpected > 0) (downloadedCount * 100 / totalExpected) else 0
                         updateProgress("Downloading... $percent%", downloadedCount)
                     }
                 }
-                
+
                 // Flush remaining items in buffer
                 if (batchBuffer.isNotEmpty()) {
                     blogRepository.insertBlogsSilent(batchBuffer).fold(
@@ -573,41 +580,37 @@ class SyncManager @Inject constructor(
                     )
                     batchBuffer.clear()
                 }
-                
+
                 streamResult.fold(
                     onSuccess = { count ->
                         AppLogger.d(TAG, "Streamed $count blogs from server (batch insert)")
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Failed to stream from server", e)
-                        isSyncRunning = false
+                        isSyncRunning.set(false)
                         clearProgress()
-                        
-                        // For network interruptions, provide a clear message
-                        // Note: Hard sync doesn't resume (we already cleared data)
-                        // so we always clear the progress flag here
-                        
+
                         return@withContext Result.failure(e)
                     }
                 )
-                
+
                 // Update last sync time
                 val now = System.currentTimeMillis()
                 syncRepository.setLastSyncTime(now)
-                
+
                 // Rebuild prefix index
                 updateProgress("Rebuilding index...")
                 prefixIndexRepository.rebuildIndex()
-                
+
                 // Notify UI once after all inserts complete
                 if (downloadedCount > 0) {
                     blogRepository.notifyDataChanged()
                 }
-                
+
                 // Clear sync running flag and progress
-                isSyncRunning = false
+                isSyncRunning.set(false)
                 clearProgress()
-                
+
                 val result = SyncResult(
                     downloaded = downloadedCount,
                     uploaded = 0,
@@ -615,14 +618,14 @@ class SyncManager @Inject constructor(
                     isSuccess = true,
                     message = "Hard sync completed"
                 )
-                
+
                 AppLogger.i(TAG, "Hard sync complete: ${result.toDisplayString()}")
                 Result.success(result)
-                
+
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error in hard sync", e)
                 // Clear both runtime flag AND persisted sync progress
-                isSyncRunning = false
+                isSyncRunning.set(false)
                 syncRepository.setSyncInProgress(false)
                 clearProgress()
                 Result.failure(e)
@@ -644,7 +647,7 @@ class SyncManager @Inject constructor(
     fun getSyncBaseUrl(): String? {
         return BuildConfig.SYNC_BASE_URL.ifEmpty { null }
     }
-    
+
     /**
      * Check if a sync was in progress (interrupted).
      * Used to auto-resume on app restart.
@@ -652,12 +655,12 @@ class SyncManager @Inject constructor(
     suspend fun wasSyncInterrupted(): Boolean {
         return syncRepository.isSyncInProgress().getOrNull() == true
     }
-    
+
     /**
      * Upload a single blog to the server.
      * This is a lightweight operation for immediate sync after save.
      * Does NOT download from server or update sync time.
-     * 
+     *
      * @param blogId The ID of the blog to upload
      * @return Result indicating success or failure
      */
@@ -671,7 +674,7 @@ class SyncManager @Inject constructor(
                         Exception("No internet connection")
                     )
                 }
-                
+
                 // Check if sync is configured
                 if (!isSyncConfigured()) {
                     AppLogger.w(TAG, "Sync not configured for single blog upload")
@@ -679,7 +682,7 @@ class SyncManager @Inject constructor(
                         Exception("Sync not configured")
                     )
                 }
-                
+
                 // Get the blog from local DB
                 val blog = blogRepository.getBlogById(blogId).getOrNull()
                 if (blog == null) {
@@ -688,26 +691,25 @@ class SyncManager @Inject constructor(
                         Exception("Blog not found")
                     )
                 }
-                
+
                 AppLogger.d(TAG, "Uploading single blog: $blogId")
-                
+
                 // Upload to server
                 val dto = BlogDto.fromBlogEntity(blog)
                 val result = supabaseApi.upsertBlogs(listOf(dto))
-                
+
                 result.fold(
-                    onSuccess = { count ->
+                    onSuccess = {
                         AppLogger.i(TAG, "Single blog uploaded successfully: $blogId")
-                        // Update last sync time so incremental sync doesn't re-upload
-                        syncRepository.setLastSyncTime(System.currentTimeMillis())
+                        // Do NOT advance lastSyncTime — only incremental sync should do that
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Failed to upload single blog: $blogId", e)
                     }
                 )
-                
+
                 result.map { }
-                
+
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error uploading single blog: $blogId", e)
                 Result.failure(e)
@@ -718,7 +720,7 @@ class SyncManager @Inject constructor(
     /**
      * Delete a blog from the server by moving it to recycle_bin.
      * This is called when a blog is deleted locally.
-     * 
+     *
      * @param blogId The ID of the blog to delete from server
      * @return Result indicating success or failure
      */
@@ -732,7 +734,7 @@ class SyncManager @Inject constructor(
                         Exception("No internet connection")
                     )
                 }
-                
+
                 // Check if sync is configured
                 if (!isSyncConfigured()) {
                     AppLogger.w(TAG, "Sync not configured for blog delete")
@@ -740,12 +742,12 @@ class SyncManager @Inject constructor(
                         Exception("Sync not configured")
                     )
                 }
-                
+
                 AppLogger.d(TAG, "Soft deleting blog on server: $blogId")
-                
+
                 // Soft delete on server (set is_deleted = true) and return the result
                 return@withContext supabaseApi.softDeleteOnServer(blogId)
-                
+
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting blog from server: $blogId", e)
                 Result.failure(e)
@@ -756,41 +758,53 @@ class SyncManager @Inject constructor(
     /**
      * Launch server delete in application scope.
      * This survives ViewModel destruction (navigation).
-     * Calls onFailure callback if server delete fails, so caller can restore local data.
-     * 
+     * On failure, restores the blog locally and reindexes.
+     *
      * @param blogId The ID of the blog to delete
      * @param blogBackup The backup data to restore on failure
-     * @param onResult Callback called with error (null if success)
+     * @param blogPrefix The prefix of the blog for reindexing on restore
      */
     fun launchServerDelete(
         blogId: Long,
-        blogBackup: com.viswa2k.syncpad.data.entity.BlogEntity,
-        onResult: (Exception?) -> Unit
+        blogBackup: BlogEntity,
+        blogPrefix: String?
     ) {
         syncScope.launch {
             try {
                 val result = deleteBlogFromServer(blogId)
-                
+
                 result.fold(
                     onSuccess = {
                         AppLogger.i(TAG, "Server delete completed: $blogId")
-                        // Call callback on main thread
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            onResult(null)
-                        }
                     },
                     onFailure = { e ->
-                        AppLogger.e(TAG, "Server delete failed, calling rollback: $blogId", e)
-                        // Call callback on main thread with error
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            onResult(e as? Exception ?: Exception(e.message))
+                        AppLogger.e(TAG, "Server delete failed, restoring local: $blogId", e)
+                        // Restore the blog locally
+                        blogRepository.insertBlogSilent(blogBackup)
+                        blogRepository.notifyDataChanged()
+
+                        // Reindex to restore the prefix
+                        blogPrefix?.let { prefix ->
+                            try {
+                                prefixIndexRepository.partialUpdate(setOf(prefix))
+                            } catch (reindexError: Exception) {
+                                AppLogger.e(TAG, "Error reindexing after restore", reindexError)
+                            }
                         }
                     }
                 )
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Exception in launchServerDelete: $blogId", e)
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    onResult(e)
+                // Restore the blog locally on any exception
+                blogRepository.insertBlogSilent(blogBackup)
+                blogRepository.notifyDataChanged()
+
+                blogPrefix?.let { prefix ->
+                    try {
+                        prefixIndexRepository.partialUpdate(setOf(prefix))
+                    } catch (reindexError: Exception) {
+                        AppLogger.e(TAG, "Error reindexing after restore", reindexError)
+                    }
                 }
             }
         }

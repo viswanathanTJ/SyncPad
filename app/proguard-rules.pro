@@ -19,6 +19,13 @@
 -keep class com.viswa2k.syncpad.sync.BlogDto { *; }
 -keepclassmembers class com.viswa2k.syncpad.sync.BlogDto { *; }
 
+# Keep inner classes used by Supabase API (Gson deserialization)
+-keep class com.viswa2k.syncpad.sync.SupabaseApi$DeletedIdDto { *; }
+-keepclassmembers class com.viswa2k.syncpad.sync.SupabaseApi$DeletedIdDto { *; }
+
+# Keep custom exceptions used across threads
+-keep class com.viswa2k.syncpad.sync.SupabaseApi$NetworkInterruptedException { *; }
+
 # OkHttp
 -dontwarn okhttp3.**
 -dontwarn okio.**

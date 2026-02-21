@@ -145,35 +145,11 @@ class BlogDetailViewModel @Inject constructor(
                         
                         // STEP 4: Navigate back immediately (fast UX)
                         _deleteState.value = UiState.Success(Unit)
-                        
+
                         // STEP 5: Try server delete in background
                         // Use syncScope (application scope) to survive ViewModel destruction
-                        syncManager.launchServerDelete(blogId, blogBackup) { error ->
-                            // This callback is called on failure - restore local
-                            if (error != null) {
-                                viewModelScope.launch {
-                                    AppLogger.e(TAG, "Server delete failed, restoring local: $blogId", error)
-                                    
-                                    // Restore the blog locally
-                                    blogRepository.insertBlogSilent(blogBackup)
-                                    
-                                    // Reindex to restore the prefix
-                                    blogPrefix?.let { prefix ->
-                                        try {
-                                            prefixIndexRepository.partialUpdate(setOf(prefix))
-                                        } catch (e: Exception) {
-                                            AppLogger.e(TAG, "Error reindexing after restore", e)
-                                        }
-                                    }
-                                    
-                                    // Show error (won't work if user navigated away, but try anyway)
-                                    _deleteState.value = UiState.Error(
-                                        message = "Delete failed, restored: ${error.message}",
-                                        exception = error
-                                    )
-                                }
-                            }
-                        }
+                        // Restore logic is handled inside SyncManager if server delete fails
+                        syncManager.launchServerDelete(blogId, blogBackup, blogPrefix)
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Error deleting blog locally: $blogId", e)

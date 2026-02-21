@@ -27,10 +27,10 @@ import javax.inject.Singleton
  * Maps to Supabase blogs table columns.
  */
 data class BlogDto(
-    val id: Long? = null,
-    val title: String,
-    val content: String?,
-    @SerializedName("title_prefix") val titlePrefix: String? = null, // May be null or incorrect from server
+    @SerializedName("id") val id: Long? = null,
+    @SerializedName("title") val title: String,
+    @SerializedName("content") val content: String?,
+    @SerializedName("title_prefix") val titlePrefix: String? = null,
     @SerializedName("created_at") val createdAt: Long,
     @SerializedName("updated_at") val updatedAt: Long,
     @SerializedName("device_id") val deviceId: String,
@@ -43,7 +43,7 @@ data class BlogDto(
          * Should match settings but use 5 as fallback.
          */
         const val DEFAULT_MAX_DEPTH = 5
-        
+
         fun fromBlogEntity(entity: BlogEntity): BlogDto {
             return BlogDto(
                 id = entity.id,
@@ -58,7 +58,7 @@ data class BlogDto(
             )
         }
     }
-    
+
     /**
      * Convert to BlogEntity with LOCALLY calculated title_prefix.
      * This ensures title_prefix = UPPER(SUBSTR(title, 1, maxDepth))
@@ -67,7 +67,7 @@ data class BlogDto(
     fun toBlogEntity(maxDepth: Int = DEFAULT_MAX_DEPTH): BlogEntity {
         // ALWAYS recalculate title_prefix locally from title
         val calculatedPrefix = BlogEntity.generateTitlePrefix(title, maxDepth)
-        
+
         return BlogEntity(
             id = id ?: 0,
             title = title,
@@ -85,7 +85,7 @@ data class BlogDto(
 /**
  * Simple DTO for parsing deleted blog IDs from recycle_bin table.
  */
-private data class DeletedIdDto(val id: Long? = null)
+private data class DeletedIdDto(@SerializedName("id") val id: Long? = null)
 
 /**
  * Exception thrown when network connectivity is lost during sync.
@@ -106,6 +106,11 @@ class SupabaseApi @Inject constructor() {
         private const val PAGE_SIZE = 500 // Blogs per page (increased from 50 for faster sync)
     }
 
+    private val baseUrl: String = BuildConfig.SYNC_BASE_URL
+    private val apiKey: String = BuildConfig.SYNC_API_KEY
+
+    private fun isSyncConfigured(): Boolean = baseUrl.isNotEmpty() && apiKey.isNotEmpty()
+
     private val gson: Gson = GsonBuilder()
         .setDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
         .create()
@@ -114,7 +119,11 @@ class SupabaseApi @Inject constructor() {
         val loggingInterceptor = HttpLoggingInterceptor { message ->
             AppLogger.d(TAG, message)
         }.apply {
-            level = HttpLoggingInterceptor.Level.BASIC
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.BASIC
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
         }
 
         OkHttpClient.Builder()
@@ -127,9 +136,9 @@ class SupabaseApi @Inject constructor() {
 
     /**
      * Stream blogs from Supabase that have been updated after the given timestamp.
-     * Uses streaming JSON parsing to avoid loading entire response into memory.
+     * Uses keyset pagination (id > lastId) for stable performance at scale.
      * Calls onBlog callback for each blog as it's parsed.
-     * 
+     *
      * @param afterTimestamp Only fetch blogs created/updated after this timestamp
      * @param onBlog Callback invoked for each blog - should insert to database
      * @return Result with total count of blogs processed
@@ -140,23 +149,21 @@ class SupabaseApi @Inject constructor() {
     ): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
                 var totalCount = 0
-                var offset = 0
+                var currentAfterId = 0L
                 var hasMore = true
 
                 while (hasMore) {
                     val url = "$baseUrl/rest/v1/blogs?select=*" +
                             "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
+                            "&is_deleted=eq.false" +
+                            "&id=gt.$currentAfterId" +
                             "&order=id.asc" +
-                            "&limit=$PAGE_SIZE" +
-                            "&offset=$offset"
+                            "&limit=$PAGE_SIZE"
 
                     val request = Request.Builder()
                         .url(url)
@@ -167,13 +174,14 @@ class SupabaseApi @Inject constructor() {
                         .get()
                         .build()
 
-                    AppLogger.d(TAG, "Streaming blogs page at offset $offset")
+                    AppLogger.d(TAG, "Streaming blogs after id $currentAfterId")
 
                     val response = client.newCall(request).execute()
 
-                    // Track page count outside response block for hasMore check
+                    // Track page count and lastId outside response block
                     var pageCount = 0
-                    
+                    var lastId = currentAfterId
+
                     // Use response.use{} to ensure connection is closed even on cancellation
                     response.use { resp ->
                         if (!resp.isSuccessful) {
@@ -198,6 +206,7 @@ class SupabaseApi @Inject constructor() {
                                         onBlog(blog)
                                         pageCount++
                                         totalCount++
+                                        blog.id?.let { lastId = it }
                                     }
                                     jsonReader.endArray()
                                 }
@@ -209,7 +218,7 @@ class SupabaseApi @Inject constructor() {
 
                     // Check if we need more pages
                     hasMore = pageCount == PAGE_SIZE
-                    offset += PAGE_SIZE
+                    currentAfterId = lastId
                 }
 
                 AppLogger.i(TAG, "Streaming sync complete: $totalCount blogs processed")
@@ -217,18 +226,7 @@ class SupabaseApi @Inject constructor() {
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error streaming blogs", e)
-                // Wrap network connectivity errors with user-friendly message
-                // Check both direct exceptions and wrapped ones (e.g., SocketException wrapped in JsonSyntaxException)
-                val isNetworkError = e is UnknownHostException || e is SocketException ||
-                    e.cause is UnknownHostException || e.cause is SocketException ||
-                    e.cause?.cause is SocketException
-                
-                val wrappedException = if (isNetworkError) {
-                    AppLogger.w(TAG, "Network connectivity lost during sync")
-                    NetworkInterruptedException("Network connection lost. Sync will resume when connection is restored.", e)
-                } else {
-                    e
-                }
+                val wrappedException = wrapNetworkException(e)
                 Result.failure(wrappedException)
             }
         }
@@ -244,15 +242,13 @@ class SupabaseApi @Inject constructor() {
     suspend fun getServerCount(afterTimestamp: Long): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
                 val url = "$baseUrl/rest/v1/blogs?select=id" +
-                        "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)"
+                        "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
+                        "&is_deleted=eq.false"
 
                 val request = Request.Builder()
                     .url(url)
@@ -294,16 +290,13 @@ class SupabaseApi @Inject constructor() {
     /**
      * Get all blog IDs from the server.
      * Used to detect direct deletions by comparing with local IDs.
-     * 
+     *
      * @return Result containing set of all server blog IDs
      */
     suspend fun getAllBlogIds(): Result<Set<Long>> {
         return withContext(Dispatchers.IO) {
             try {
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
@@ -339,9 +332,9 @@ class SupabaseApi @Inject constructor() {
                         val body = resp.body?.string() ?: "[]"
                         val idObjects = gson.fromJson(body, Array<DeletedIdDto>::class.java) ?: emptyArray()
                         val pageIds = idObjects.mapNotNull { it.id }
-                        
+
                         allIds.addAll(pageIds)
-                        
+
                         hasMore = pageIds.size == PAGE_SIZE
                         offset += PAGE_SIZE
                     }
@@ -373,10 +366,7 @@ class SupabaseApi @Inject constructor() {
     ): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
@@ -388,6 +378,7 @@ class SupabaseApi @Inject constructor() {
                     // Use keyset pagination (id > afterId) instead of offset
                     val url = "$baseUrl/rest/v1/blogs?select=*" +
                             "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
+                            "&is_deleted=eq.false" +
                             "&id=gt.$currentAfterId" +
                             "&order=id.asc" +
                             "&limit=$PAGE_SIZE"
@@ -408,7 +399,7 @@ class SupabaseApi @Inject constructor() {
                     // Track page count and lastId outside response block
                     var pageCount = 0
                     var lastId = currentAfterId
-                    
+
                     // Use response.use{} to ensure connection is closed even on cancellation
                     response.use { resp ->
                         if (!resp.isSuccessful) {
@@ -453,49 +444,36 @@ class SupabaseApi @Inject constructor() {
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error streaming blogs after id", e)
-                // Wrap network connectivity errors with user-friendly message
-                // Check both direct exceptions and wrapped ones (e.g., SocketException wrapped in JsonSyntaxException)
-                val isNetworkError = e is UnknownHostException || e is SocketException ||
-                    e.cause is UnknownHostException || e.cause is SocketException ||
-                    e.cause?.cause is SocketException
-                
-                val wrappedException = if (isNetworkError) {
-                    AppLogger.w(TAG, "Network connectivity lost during sync")
-                    NetworkInterruptedException("Network connection lost. Sync will resume when connection is restored.", e)
-                } else {
-                    e
-                }
+                val wrappedException = wrapNetworkException(e)
                 Result.failure(wrappedException)
             }
         }
     }
 
     /**
-     * Stream all blogs from Supabase with pagination.
+     * Stream all blogs from Supabase with keyset pagination.
      * Uses streaming JSON parsing to avoid loading entire response into memory.
-     * 
+     *
      * @param onBlog Callback invoked for each blog - should insert to database
      * @return Result with total count of blogs processed
      */
     suspend fun streamAllBlogs(onBlog: suspend (BlogDto) -> Unit): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
                 var totalCount = 0
-                var offset = 0
+                var currentAfterId = 0L
                 var hasMore = true
 
                 while (hasMore) {
                     val url = "$baseUrl/rest/v1/blogs?select=*" +
+                            "&is_deleted=eq.false" +
+                            "&id=gt.$currentAfterId" +
                             "&order=id.asc" +
-                            "&limit=$PAGE_SIZE" +
-                            "&offset=$offset"
+                            "&limit=$PAGE_SIZE"
 
                     val request = Request.Builder()
                         .url(url)
@@ -505,13 +483,14 @@ class SupabaseApi @Inject constructor() {
                         .get()
                         .build()
 
-                    AppLogger.d(TAG, "Streaming all blogs page at offset $offset")
+                    AppLogger.d(TAG, "Streaming all blogs after id $currentAfterId")
 
                     val response = client.newCall(request).execute()
 
-                    // Track page count outside response block for hasMore check
+                    // Track page count and lastId outside response block
                     var pageCount = 0
-                    
+                    var lastId = currentAfterId
+
                     // Use response.use{} to ensure connection is closed even on cancellation
                     response.use { resp ->
                         if (!resp.isSuccessful) {
@@ -536,6 +515,7 @@ class SupabaseApi @Inject constructor() {
                                         onBlog(blog)
                                         pageCount++
                                         totalCount++
+                                        blog.id?.let { lastId = it }
                                     }
                                     jsonReader.endArray()
                                 }
@@ -546,7 +526,7 @@ class SupabaseApi @Inject constructor() {
                     AppLogger.i(TAG, "Streamed page: $pageCount blogs, total: $totalCount")
 
                     hasMore = pageCount == PAGE_SIZE
-                    offset += PAGE_SIZE
+                    currentAfterId = lastId
                 }
 
                 AppLogger.i(TAG, "Streaming all blogs complete: $totalCount total")
@@ -554,18 +534,7 @@ class SupabaseApi @Inject constructor() {
 
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error streaming all blogs", e)
-                // Wrap network connectivity errors with user-friendly message
-                // Check both direct exceptions and wrapped ones (e.g., SocketException wrapped in JsonSyntaxException)
-                val isNetworkError = e is UnknownHostException || e is SocketException ||
-                    e.cause is UnknownHostException || e.cause is SocketException ||
-                    e.cause?.cause is SocketException
-                
-                val wrappedException = if (isNetworkError) {
-                    AppLogger.w(TAG, "Network connectivity lost during sync")
-                    NetworkInterruptedException("Network connection lost. Sync will resume when connection is restored.", e)
-                } else {
-                    e
-                }
+                val wrappedException = wrapNetworkException(e)
                 Result.failure(wrappedException)
             }
         }
@@ -577,10 +546,7 @@ class SupabaseApi @Inject constructor() {
     suspend fun getAllBlogs(): Result<List<BlogDto>> {
         return withContext(Dispatchers.IO) {
             try {
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
@@ -615,17 +581,17 @@ class SupabaseApi @Inject constructor() {
 
                         val body = resp.body?.string() ?: "[]"
                         val blogs = gson.fromJson(body, Array<BlogDto>::class.java).toList()
-                        
+
                         allBlogs.addAll(blogs)
-                        
+
                         // Check if we need to fetch more pages
                         hasMore = blogs.size == PAGE_SIZE
                         offset += PAGE_SIZE
-                        
+
                         AppLogger.i(TAG, "Fetched page: ${blogs.size} blogs, total: ${allBlogs.size}")
                     }
                 }
-                
+
                 AppLogger.i(TAG, "Downloaded ${allBlogs.size} total blogs from server")
                 Result.success(allBlogs)
 
@@ -642,10 +608,7 @@ class SupabaseApi @Inject constructor() {
     suspend fun upsertBlog(blog: BlogDto): Result<BlogDto> {
         return withContext(Dispatchers.IO) {
             try {
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
@@ -675,7 +638,7 @@ class SupabaseApi @Inject constructor() {
                     val body = resp.body?.string() ?: "[]"
                     val result = gson.fromJson(body, Array<BlogDto>::class.java).firstOrNull()
                         ?: return@withContext Result.failure(Exception("No result returned"))
-                    
+
                     AppLogger.i(TAG, "Uploaded blog: ${result.title}")
                     Result.success(result)
                 }
@@ -697,15 +660,12 @@ class SupabaseApi @Inject constructor() {
                     return@withContext Result.success(0)
                 }
 
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
                 var totalUploaded = 0
-                
+
                 // Upload in batches of 100 to avoid request size limits
                 blogs.chunked(100).forEach { batch ->
                     val url = "$baseUrl/rest/v1/blogs"
@@ -748,23 +708,20 @@ class SupabaseApi @Inject constructor() {
     /**
      * Soft delete a blog on the server by setting is_deleted = true.
      * This replaces the old recycle_bin approach with simpler soft delete.
-     * 
+     *
      * @param blogId The ID of the blog to soft delete
      * @return Result indicating success or failure
      */
     suspend fun softDeleteOnServer(blogId: Long): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
                 val now = System.currentTimeMillis()
                 val url = "$baseUrl/rest/v1/blogs?id=eq.$blogId"
-                
+
                 val updateData = mapOf(
                     "is_deleted" to true,
                     "deleted_at" to now,
@@ -788,12 +745,12 @@ class SupabaseApi @Inject constructor() {
                 response.use { resp ->
                     val responseBody = resp.body?.string()
                     AppLogger.d(TAG, "Soft delete response: ${resp.code} - $responseBody")
-                    
+
                     if (!resp.isSuccessful) {
                         AppLogger.e(TAG, "Failed to soft delete on server: ${resp.code} - $responseBody")
                         return@withContext Result.failure(Exception("Failed to soft delete: ${resp.code}"))
                     }
-                    
+
                     // Check if the response indicates any rows were updated
                     // Supabase returns an array - if empty [], no rows matched the filter
                     if (responseBody != null && responseBody.trim() == "[]") {
@@ -815,17 +772,14 @@ class SupabaseApi @Inject constructor() {
     /**
      * Get IDs of blogs that have been soft-deleted on the server.
      * Queries blogs table for is_deleted = true.
-     * 
+     *
      * @param afterTimestamp Only get deletions that occurred after this timestamp
      * @return Result containing list of deleted blog IDs
      */
     suspend fun getDeletedBlogIds(afterTimestamp: Long): Result<List<Long>> {
         return withContext(Dispatchers.IO) {
             try {
-                val baseUrl = BuildConfig.SYNC_BASE_URL
-                val apiKey = BuildConfig.SYNC_API_KEY
-
-                if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+                if (!isSyncConfigured()) {
                     return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
@@ -863,13 +817,13 @@ class SupabaseApi @Inject constructor() {
                         }
 
                         val body = resp.body?.string() ?: "[]"
-                        
+
                         // Parse the JSON array of {id: Long} objects
                         val idObjects = gson.fromJson(body, Array<DeletedIdDto>::class.java) ?: emptyArray()
                         val pageIds = idObjects.mapNotNull { it.id }
-                        
+
                         allIds.addAll(pageIds)
-                        
+
                         hasMore = pageIds.size == PAGE_SIZE
                         offset += PAGE_SIZE
                     }
@@ -883,6 +837,22 @@ class SupabaseApi @Inject constructor() {
                 // Don't fail sync for this, just return empty list
                 Result.success(emptyList())
             }
+        }
+    }
+
+    /**
+     * Wrap network connectivity errors with user-friendly message.
+     */
+    private fun wrapNetworkException(e: Exception): Exception {
+        val isNetworkError = e is UnknownHostException || e is SocketException ||
+            e.cause is UnknownHostException || e.cause is SocketException ||
+            e.cause?.cause is SocketException
+
+        return if (isNetworkError) {
+            AppLogger.w(TAG, "Network connectivity lost during sync")
+            NetworkInterruptedException("Network connection lost. Sync will resume when connection is restored.", e)
+        } else {
+            e
         }
     }
 }

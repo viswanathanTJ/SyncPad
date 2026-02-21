@@ -32,7 +32,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,8 +64,8 @@ fun AddBlogScreen(
     onNavigateBack: () -> Unit,
     viewModel: AddBlogViewModel = hiltViewModel()
 ) {
-    val saveState by viewModel.saveState.collectAsState()
-    val loadState by viewModel.loadState.collectAsState()
+    val saveState by viewModel.saveState.collectAsStateWithLifecycle()
+    val loadState by viewModel.loadState.collectAsStateWithLifecycle()
     
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -73,6 +73,7 @@ fun AddBlogScreen(
     var title by remember { mutableStateOf("") }
     var content by remember { mutableStateOf("") }
     var hasUnsavedChanges by remember { mutableStateOf(false) }
+    var userEditedTitle by remember { mutableStateOf(false) }
     
     val isEditing = blogId != null && blogId > 0
 
@@ -90,6 +91,7 @@ fun AddBlogScreen(
                 title = state.data.title
                 content = state.data.content ?: ""
                 hasUnsavedChanges = false
+                userEditedTitle = true // Treat loaded title as user-provided
             }
             is UiState.Error -> {
                 snackbarHostState.showSnackbar(
@@ -150,9 +152,9 @@ fun AddBlogScreen(
             if (pastedText.isNotBlank()) {
                 content = pastedText
                 hasUnsavedChanges = true
-                
-                // Auto-generate title from content if title is empty
-                if (title.isBlank()) {
+
+                // Auto-generate title from content if user hasn't edited it
+                if (!userEditedTitle && title.isBlank()) {
                     title = generateTitleFromContent(pastedText)
                 }
             }
@@ -239,6 +241,7 @@ fun AddBlogScreen(
                             onValueChange = { newTitle ->
                                 title = cleanTitle(newTitle).take(MAX_TITLE_LENGTH)
                                 hasUnsavedChanges = true
+                                userEditedTitle = true
                             },
                             label = { Text("Title (auto-generated)") },
                             placeholder = { Text("Will be generated from content") },
@@ -256,12 +259,14 @@ fun AddBlogScreen(
                             onValueChange = { newContent ->
                                 content = newContent
                                 hasUnsavedChanges = true
-                                
-                                // Auto-update title from content - clear title if content is empty
-                                title = if (newContent.isNotBlank()) {
-                                    generateTitleFromContent(newContent)
-                                } else {
-                                    ""
+
+                                // Auto-update title from content only if user hasn't manually edited it
+                                if (!userEditedTitle) {
+                                    title = if (newContent.isNotBlank()) {
+                                        generateTitleFromContent(newContent)
+                                    } else {
+                                        ""
+                                    }
                                 }
                             },
                             label = { Text("Content") },

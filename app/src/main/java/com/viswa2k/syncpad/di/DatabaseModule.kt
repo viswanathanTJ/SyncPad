@@ -1,6 +1,7 @@
 package com.viswa2k.syncpad.di
 
 import android.content.Context
+import androidx.room.Room
 import com.viswa2k.syncpad.data.AppDatabase
 import com.viswa2k.syncpad.data.dao.BlogDao
 import com.viswa2k.syncpad.data.dao.PrefixIndexDao
@@ -22,7 +23,14 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
-        return AppDatabase.getInstance(context)
+        return Room.databaseBuilder(
+            context.applicationContext,
+            AppDatabase::class.java,
+            AppDatabase.DATABASE_NAME
+        )
+            .addMigrations(AppDatabase.MIGRATION_2_3)
+            .fallbackToDestructiveMigration()
+            .build()
     }
 
     @Provides

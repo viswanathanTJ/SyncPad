@@ -17,6 +17,7 @@ import com.viswa2k.syncpad.ui.state.UiState
 import com.viswa2k.syncpad.util.AppLogger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -282,14 +283,17 @@ class BlogListViewModel @Inject constructor(
         }
     }
 
+    private var alphabetIndexJob: Job? = null
+
     /**
      * Load the alphabet index for sidebar navigation.
      */
     fun loadAlphabetIndex() {
-        viewModelScope.launch {
+        alphabetIndexJob?.cancel()
+        alphabetIndexJob = viewModelScope.launch {
             try {
                 _alphabetIndex.value = UiState.Loading
-                
+
                 prefixIndexRepository.getAlphabetIndexFlow()
                     .catch { e ->
                         AppLogger.e(TAG, "Error loading alphabet index", e)
@@ -345,12 +349,8 @@ class BlogListViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 _indexState.value = IndexState.Building
-                
-                val maxDepth = settingsRepository.getMaxDepthFlow()
-                    .stateIn(viewModelScope)
-                    .value
 
-                val result = prefixIndexRepository.rebuildIndex(maxDepth)
+                val result = prefixIndexRepository.rebuildIndex(maxDepth.value)
                 
                 result.fold(
                     onSuccess = { count ->
@@ -428,45 +428,17 @@ class BlogListViewModel @Inject constructor(
      * Perform sync from the home screen.
      */
     fun performSync(isManual: Boolean = true) {
-        viewModelScope.launch {
-            try {
-                // Don't update state if sync is already running
-                if (syncManager.isSyncCurrentlyRunning()) {
-                    AppLogger.d(TAG, "Sync already running, skipping")
-                    return@launch
-                }
-                
-                _syncState.value = SyncState.Syncing()
-                
-                val result = syncManager.performIncrementalSync()
-                
-                result.fold(
-                    onSuccess = { syncResult ->
-                        _syncState.value = SyncState.Success(syncResult, isManual)
-                        // Refresh the list after sync
-                        refreshList()
-                    },
-                    onFailure = { e ->
-                        // If sync was already running, don't change state (another sync is active)
-                        if (e.message?.contains("already in progress") == true) {
-                            AppLogger.d(TAG, "Ignoring 'already in progress' error - sync is running")
-                            return@fold
-                        }
-                        AppLogger.e(TAG, "Error in sync", e)
-                        _syncState.value = SyncState.Error(
-                            message = e.message ?: "Sync failed",
-                            exception = e
-                        )
-                    }
-                )
-            } catch (e: Exception) {
-                AppLogger.e(TAG, "Error in performSync", e)
-                _syncState.value = SyncState.Error(
-                    message = e.message ?: "Sync failed",
-                    exception = e
-                )
-            }
+        // Don't update state if sync is already running
+        if (syncManager.isSyncCurrentlyRunning()) {
+            AppLogger.d(TAG, "Sync already running, skipping")
+            return
         }
+
+        _syncState.value = SyncState.Syncing()
+
+        // Launch in app scope via SyncManager (survives navigation/ViewModel destruction)
+        // Completion is observed via lastSyncResult flow in init block
+        syncManager.launchIncrementalSync()
     }
 
     /**

@@ -9,7 +9,9 @@ import com.viswa2k.syncpad.data.model.BlogListItem
 import com.viswa2k.syncpad.data.paging.BlogPagingSource
 import com.viswa2k.syncpad.data.paging.SortOrder
 import com.viswa2k.syncpad.util.AppLogger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -33,10 +35,14 @@ class BlogRepository @Inject constructor(
         private const val TAG = "BlogRepository"
         private const val PAGE_SIZE = 50
         const val SYNC_BATCH_SIZE = 500 // Batch size for sync operations
+        private const val SQLITE_MAX_VARIABLE_NUMBER = 900
     }
 
     // Event bus to notify when data changes
-    private val _dataChanged = MutableSharedFlow<Unit>(replay = 0)
+    private val _dataChanged = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     val dataChanged: SharedFlow<Unit> = _dataChanged.asSharedFlow()
 
     // ============================================
@@ -46,13 +52,13 @@ class BlogRepository @Inject constructor(
     /**
      * Get a paged flow of blogs for the list screen.
      * Uses cursor-based pagination for stability at 200k+ rows.
-     * 
+     *
      * @param prefixFilter Optional filter for prefix-based navigation
      * @param sortOrder Sort order (ALPHABETICAL or LATEST)
      * @return Flow of PagingData containing BlogListItem (no content)
      */
     fun getPagedBlogs(
-        prefixFilter: String? = null, 
+        prefixFilter: String? = null,
         sortOrder: SortOrder = SortOrder.ALPHABETICAL
     ): Flow<PagingData<BlogListItem>> {
         return Pager(
@@ -63,10 +69,6 @@ class BlogRepository @Inject constructor(
             ),
             pagingSourceFactory = { BlogPagingSource(blogDao, prefixFilter, sortOrder) }
         ).flow
-            .catch { e ->
-                AppLogger.e(TAG, "Error in paged blogs flow", e)
-                throw e
-            }
     }
 
     // ============================================
@@ -95,15 +97,11 @@ class BlogRepository @Inject constructor(
     fun getBlogByIdFlow(id: Long): Flow<BlogEntity?> {
         return blogDao.getByIdFlow(id)
             .flowOn(Dispatchers.IO)
-            .catch { e ->
-                AppLogger.e(TAG, "Error in blog flow for id: $id", e)
-                throw e
-            }
     }
 
     /**
      * Insert a new blog.
-     * 
+     *
      * @param blog The blog entity to insert
      * @return Result containing the new blog's ID or an error
      */
@@ -112,8 +110,10 @@ class BlogRepository @Inject constructor(
             try {
                 val id = blogDao.insert(blog)
                 AppLogger.i(TAG, "Inserted blog with id: $id")
-                _dataChanged.emit(Unit)
+                _dataChanged.tryEmit(Unit)
                 Result.success(id)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error inserting blog", e)
                 Result.failure(e)
@@ -143,7 +143,7 @@ class BlogRepository @Inject constructor(
      * Call after batch operations that used silent methods.
      */
     suspend fun notifyDataChanged() {
-        _dataChanged.emit(Unit)
+        _dataChanged.tryEmit(Unit)
     }
 
     /**
@@ -154,8 +154,10 @@ class BlogRepository @Inject constructor(
             try {
                 val rowsUpdated = blogDao.update(blog)
                 AppLogger.i(TAG, "Updated blog id: ${blog.id}, rows: $rowsUpdated")
-                _dataChanged.emit(Unit)
+                _dataChanged.tryEmit(Unit)
                 Result.success(rowsUpdated)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error updating blog id: ${blog.id}", e)
                 Result.failure(e)
@@ -174,8 +176,10 @@ class BlogRepository @Inject constructor(
                 val now = System.currentTimeMillis()
                 val rowsUpdated = blogDao.softDeleteById(id, deletedAt = now, updatedAt = now)
                 AppLogger.i(TAG, "Soft deleted blog id: $id, rows: $rowsUpdated")
-                _dataChanged.emit(Unit)
+                _dataChanged.tryEmit(Unit)
                 Result.success(rowsUpdated)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error soft deleting blog id: $id", e)
                 Result.failure(e)
@@ -192,8 +196,10 @@ class BlogRepository @Inject constructor(
             try {
                 val rowsDeleted = blogDao.deleteById(id)
                 AppLogger.i(TAG, "Deleted blog id: $id, rows: $rowsDeleted")
-                _dataChanged.emit(Unit)
+                _dataChanged.tryEmit(Unit)
                 Result.success(rowsDeleted)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting blog id: $id", e)
                 Result.failure(e)
@@ -226,8 +232,10 @@ class BlogRepository @Inject constructor(
             try {
                 val rowsDeleted = blogDao.deleteAll()
                 AppLogger.i(TAG, "Deleted all blogs, rows: $rowsDeleted")
-                _dataChanged.emit(Unit)
+                _dataChanged.tryEmit(Unit)
                 Result.success(rowsDeleted)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting all blogs", e)
                 Result.failure(e)
@@ -238,6 +246,7 @@ class BlogRepository @Inject constructor(
     /**
      * Delete multiple blogs by their IDs.
      * Used during sync to remove server-deleted items.
+     * Chunks into batches of 900 to stay under SQLite variable limit.
      * Does NOT emit dataChanged - caller should do so after batch operations.
      */
     suspend fun deleteBlogsByIds(ids: List<Long>): Result<Int> {
@@ -246,9 +255,12 @@ class BlogRepository @Inject constructor(
                 if (ids.isEmpty()) {
                     return@withContext Result.success(0)
                 }
-                val rowsDeleted = blogDao.deleteByIds(ids)
-                AppLogger.i(TAG, "Deleted ${rowsDeleted} blogs by IDs")
-                Result.success(rowsDeleted)
+                var totalDeleted = 0
+                ids.chunked(SQLITE_MAX_VARIABLE_NUMBER).forEach { chunk ->
+                    totalDeleted += blogDao.deleteByIds(chunk)
+                }
+                AppLogger.i(TAG, "Deleted $totalDeleted blogs by IDs")
+                Result.success(totalDeleted)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error deleting blogs by IDs", e)
                 Result.failure(e)
@@ -283,7 +295,7 @@ class BlogRepository @Inject constructor(
             .flowOn(Dispatchers.IO)
             .catch { e ->
                 AppLogger.e(TAG, "Error in blog count flow", e)
-                throw e
+                emit(0)
             }
     }
 
@@ -309,7 +321,7 @@ class BlogRepository @Inject constructor(
     suspend fun getCountByPrefix(prefix: String): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                val count = blogDao.getCountByPrefix(prefix, prefix.length)
+                val count = blogDao.getCountByPrefix(prefix)
                 Result.success(count)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error getting count by prefix", e)
@@ -360,8 +372,10 @@ class BlogRepository @Inject constructor(
             try {
                 val ids = blogDao.insertAll(blogs)
                 AppLogger.i(TAG, "Inserted ${ids.size} blogs")
-                _dataChanged.emit(Unit)
+                _dataChanged.tryEmit(Unit)
                 Result.success(ids)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error inserting blogs batch", e)
                 Result.failure(e)
@@ -373,7 +387,7 @@ class BlogRepository @Inject constructor(
      * Insert multiple blogs at once without emitting dataChanged event.
      * Used during streaming sync to avoid spamming list refreshes.
      * Call notifyDataChanged() manually after sync completes.
-     * 
+     *
      * @param blogs List of blog entities to insert (max SYNC_BATCH_SIZE recommended)
      * @return Result containing list of inserted IDs or an error
      */
@@ -400,6 +414,28 @@ class BlogRepository @Inject constructor(
                 Result.success(prefix)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error getting title prefix for id: $id", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Get distinct title prefixes for a batch of blog IDs.
+     * Used to avoid N+1 queries when processing deleted blog prefixes.
+     */
+    suspend fun getTitlePrefixesByIds(ids: List<Long>): Result<List<String>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                if (ids.isEmpty()) {
+                    return@withContext Result.success(emptyList())
+                }
+                val allPrefixes = mutableListOf<String>()
+                ids.chunked(SQLITE_MAX_VARIABLE_NUMBER).forEach { chunk ->
+                    allPrefixes.addAll(blogDao.getTitlePrefixesByIds(chunk))
+                }
+                Result.success(allPrefixes.distinct())
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting title prefixes by IDs", e)
                 Result.failure(e)
             }
         }
