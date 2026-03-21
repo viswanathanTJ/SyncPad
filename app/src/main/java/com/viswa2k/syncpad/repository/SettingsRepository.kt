@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.viswa2k.syncpad.data.index.PrefixIndexBuilder
@@ -13,6 +14,7 @@ import com.viswa2k.syncpad.util.AppLogger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -37,6 +39,8 @@ class SettingsRepository @Inject constructor(
         private val KEY_SHOW_BOTTOM_INDEX = booleanPreferencesKey("show_bottom_index")
         private val KEY_SHOW_SIDEBAR = booleanPreferencesKey("show_sidebar")
         private val KEY_SHOW_QUICK_NAV_FAB = booleanPreferencesKey("show_quick_nav_fab")
+        private val KEY_AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
+        private val KEY_LAST_UPDATE_CHECK_TIME = longPreferencesKey("last_update_check_time")
 
         // Default values
         const val DEFAULT_THEME = "system"
@@ -45,6 +49,7 @@ class SettingsRepository @Inject constructor(
         const val DEFAULT_SHOW_BOTTOM_INDEX = false
         const val DEFAULT_SHOW_SIDEBAR = true
         const val DEFAULT_SHOW_QUICK_NAV_FAB = true
+        const val DEFAULT_AUTO_CHECK_UPDATES = false
 
         // Theme options
         const val THEME_LIGHT = "light"
@@ -266,6 +271,67 @@ class SettingsRepository @Inject constructor(
     }
 
     // ============================================
+    // APP UPDATES
+    // ============================================
+
+    /**
+     * Get whether the app should automatically check for updates.
+     */
+    fun getAutoCheckUpdatesFlow(): Flow<Boolean> {
+        return context.dataStore.data
+            .map { preferences ->
+                preferences[KEY_AUTO_CHECK_UPDATES] ?: DEFAULT_AUTO_CHECK_UPDATES
+            }
+            .catch { e ->
+                AppLogger.e(TAG, "Error reading auto update preference", e)
+                emit(DEFAULT_AUTO_CHECK_UPDATES)
+            }
+    }
+
+    /**
+     * Set whether the app should automatically check for updates.
+     */
+    suspend fun setAutoCheckUpdates(enabled: Boolean): Result<Unit> {
+        return try {
+            context.dataStore.edit { preferences ->
+                preferences[KEY_AUTO_CHECK_UPDATES] = enabled
+            }
+            AppLogger.i(TAG, "Set auto check updates to: $enabled")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Error setting auto update preference", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Get the last successful update-check timestamp.
+     */
+    suspend fun getLastUpdateCheckTime(): Long {
+        return try {
+            context.dataStore.data.first()[KEY_LAST_UPDATE_CHECK_TIME] ?: 0L
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Error reading last update check time", e)
+            0L
+        }
+    }
+
+    /**
+     * Save the last update-check timestamp.
+     */
+    suspend fun setLastUpdateCheckTime(timestamp: Long): Result<Unit> {
+        return try {
+            context.dataStore.edit { preferences ->
+                preferences[KEY_LAST_UPDATE_CHECK_TIME] = timestamp
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Error saving last update check time", e)
+            Result.failure(e)
+        }
+    }
+
+    // ============================================
     // ALL SETTINGS
     // ============================================
 
@@ -278,7 +344,8 @@ class SettingsRepository @Inject constructor(
         val maxDepth: Int = DEFAULT_MAX_DEPTH,
         val showBottomIndex: Boolean = DEFAULT_SHOW_BOTTOM_INDEX,
         val showSidebar: Boolean = DEFAULT_SHOW_SIDEBAR,
-        val showQuickNavFab: Boolean = DEFAULT_SHOW_QUICK_NAV_FAB
+        val showQuickNavFab: Boolean = DEFAULT_SHOW_QUICK_NAV_FAB,
+        val autoCheckUpdates: Boolean = DEFAULT_AUTO_CHECK_UPDATES
     )
 
     /**
@@ -293,7 +360,8 @@ class SettingsRepository @Inject constructor(
                     maxDepth = preferences[KEY_MAX_DEPTH] ?: DEFAULT_MAX_DEPTH,
                     showBottomIndex = preferences[KEY_SHOW_BOTTOM_INDEX] ?: DEFAULT_SHOW_BOTTOM_INDEX,
                     showSidebar = preferences[KEY_SHOW_SIDEBAR] ?: DEFAULT_SHOW_SIDEBAR,
-                    showQuickNavFab = preferences[KEY_SHOW_QUICK_NAV_FAB] ?: DEFAULT_SHOW_QUICK_NAV_FAB
+                    showQuickNavFab = preferences[KEY_SHOW_QUICK_NAV_FAB] ?: DEFAULT_SHOW_QUICK_NAV_FAB,
+                    autoCheckUpdates = preferences[KEY_AUTO_CHECK_UPDATES] ?: DEFAULT_AUTO_CHECK_UPDATES
                 )
             }
             .catch { e ->

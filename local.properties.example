@@ -12,8 +12,17 @@
 # If secrets are missing, the app will still build and run gracefully
 # with empty/default values, but certain features may be limited.
 
-# Example API key for future sync backend
-# SYNC_API_KEY=your_api_key_here
+# Example API key for sync + app update checks
+# SYNC_API_KEY=your_anon_key_here
 
-# Example backend URL for future sync integration
-# SYNC_BASE_URL=https://your-backend.example.com
+# Example backend URL for sync + app update checks
+# SYNC_BASE_URL=https://your-project.supabase.co
+
+# Service role key for release uploads (used by upload_release.py/create_release.py)
+# SUPABASE_SERVICE_KEY=your_service_role_key_here
+
+# Release signing configuration
+# KEYSTORE_FILE=/Users/yourname/Documents/viswa2k.jks
+# KEYSTORE_PASSWORD=your_keystore_password
+# KEY_ALIAS=your_key_alias
+# KEY_PASSWORD=your_key_password

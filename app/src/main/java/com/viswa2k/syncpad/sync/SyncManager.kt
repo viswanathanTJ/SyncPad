@@ -3,6 +3,7 @@ package com.viswa2k.syncpad.sync
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
 import com.viswa2k.syncpad.BuildConfig
 import com.viswa2k.syncpad.data.entity.BlogEntity
 import com.viswa2k.syncpad.repository.BlogRepository
@@ -70,6 +71,7 @@ class SyncManager @Inject constructor(
          * - If exception occurs, max 500 items need re-download (acceptable)
          */
         private const val BATCH_INSERT_SIZE = 500
+        private const val BATCH_UPLOAD_SIZE = BlogRepository.SYNC_UPLOAD_BATCH_SIZE
     }
 
     /**
@@ -186,9 +188,9 @@ class SyncManager @Inject constructor(
      * Perform an incremental sync.
      *
      * 1. Get last_sync_time from local storage
-     * 2. Fetch changes from server where created_at > last_sync_time OR updated_at > last_sync_time
-     * 3. Apply changes to local database
-     * 4. Push local changes to server
+    * 2. Push local changes to server
+    * 3. Fetch changes from server where created_at > last_sync_time OR updated_at > last_sync_time
+    * 4. Apply changes to local database
      * 5. Update last_sync_time
      *
      * @return SyncResult with counts of downloaded, uploaded, and deleted items
@@ -268,11 +270,73 @@ class SyncManager @Inject constructor(
                     return if (totalExpected > 0) (totalProcessed * 100 / totalExpected) else 0
                 }
 
-                // STEP 1: Download from server using streaming with BATCH INSERTS
+                // STEP 1: Upload local changes first.
+                // This prevents server-downloaded rows from being mistaken as local changes
+                // when we later scan for records newer than the previous lastSyncTime.
+                if (lastSyncTime > 0) {
+                    val localDeviceId = Build.MODEL
+                    var cursorUpdatedAt = Long.MIN_VALUE
+                    var cursorId = 0L
+                    var hasMoreLocalChanges = true
+                    var uploadedBatchCount = 0
+
+                    while (hasMoreLocalChanges) {
+                        val localChanges = blogRepository.getBlogsForSyncBatch(
+                            afterTimestamp = lastSyncTime,
+                            deviceId = localDeviceId,
+                            cursorUpdatedAt = cursorUpdatedAt,
+                            cursorId = cursorId,
+                            limit = BATCH_UPLOAD_SIZE
+                        ).getOrElse { e ->
+                            AppLogger.e(TAG, "Failed to fetch local changes batch", e)
+                            emptyList()
+                        }
+
+                        if (localChanges.isEmpty()) {
+                            if (uploadedBatchCount == 0) {
+                                AppLogger.d(TAG, "No local changes to upload to server")
+                            }
+                            hasMoreLocalChanges = false
+                            continue
+                        }
+
+                        uploadedBatchCount++
+                        AppLogger.d(
+                            TAG,
+                            "Uploading local changes to server: batch #$uploadedBatchCount (${localChanges.size} blogs)"
+                        )
+                        updateProgress("Uploading local notes to server...", uploadedCount + localChanges.size)
+
+                        val uploadDtos = localChanges.map { BlogDto.fromBlogEntity(it) }
+                        val uploadResult = supabaseApi.upsertBlogs(uploadDtos)
+
+                        uploadResult.fold(
+                            onSuccess = { count ->
+                                uploadedCount += count
+                                affectedPrefixes.addAll(localChanges.map { it.titlePrefix })
+                                AppLogger.i(
+                                    TAG,
+                                    "Uploaded local → server batch #$uploadedBatchCount successfully ($count blogs)"
+                                )
+                            },
+                            onFailure = { e ->
+                                AppLogger.e(TAG, "Failed to upload local changes batch", e)
+                                hasMoreLocalChanges = false
+                            }
+                        )
+
+                        val lastLocalChange = localChanges.last()
+                        cursorUpdatedAt = lastLocalChange.updatedAt
+                        cursorId = lastLocalChange.id
+                        hasMoreLocalChanges = hasMoreLocalChanges && localChanges.size == BATCH_UPLOAD_SIZE
+                    }
+                }
+
+                // STEP 2: Download from server using streaming with BATCH INSERTS
                 // Buffer items and insert in batches of BATCH_INSERT_SIZE for 5-10x faster sync
                 // Track lastSyncId only AFTER successful batch insert for safe resume
                 val initialPercent = if (isResuming) getPercentage() else 0
-                val statusText = if (isResuming) "Resuming download... $initialPercent%" else "Downloading notes..."
+                val statusText = if (isResuming) "Resuming server download... $initialPercent%" else "Downloading notes from server..."
                 updateProgress(statusText, alreadyDownloaded)
 
                 // Batch buffer - max ~2.5MB memory (500 items × ~5KB each)
@@ -312,8 +376,8 @@ class SyncManager @Inject constructor(
                 }
 
                 // Use resume-aware streaming if we're resuming
-                val streamResult = if (isResuming && resumeFromId != null) {
-                    supabaseApi.streamBlogsAfterId(lastSyncTime, resumeFromId) { blogDto ->
+                val streamResult = if (isResuming) {
+                    supabaseApi.streamBlogsAfterId(lastSyncTime, resumeFromId!!) { blogDto ->
                         val entity = blogDto.toBlogEntity()
                         batchBuffer.add(entity)
                         receivedFromServer++
@@ -371,10 +435,10 @@ class SyncManager @Inject constructor(
                     }
                 )
 
-                // STEP 1.5: Handle server-side deletions
+                // STEP 2.5: Handle server-side deletions
                 // Fetch blogs marked as is_deleted=true on server since last sync
                 var deletedCount = 0
-                updateProgress("Checking deletions...")
+                updateProgress("Checking server deletions...")
 
                 val deletedIds = supabaseApi.getDeletedBlogIds(lastSyncTime).getOrNull() ?: emptyList()
 
@@ -388,30 +452,6 @@ class SyncManager @Inject constructor(
                     // Hard delete from local database (server already marked them as deleted)
                     deletedCount = blogRepository.deleteBlogsByIds(deletedIds).getOrNull() ?: 0
                     AppLogger.i(TAG, "Removed $deletedCount locally that were deleted on server")
-                }
-
-                // STEP 2: Upload local changes to server
-                // Always check for local changes (upload and download are independent)
-                if (lastSyncTime > 0) {
-                    val localChanges = blogRepository.getBlogsForSync(lastSyncTime).getOrNull() ?: emptyList()
-                    if (localChanges.isNotEmpty()) {
-                        AppLogger.d(TAG, "Found ${localChanges.size} local changes to upload")
-                        updateProgress("Uploading notes...", localChanges.size)
-
-                        val uploadDtos = localChanges.map { BlogDto.fromBlogEntity(it) }
-                        val uploadResult = supabaseApi.upsertBlogs(uploadDtos)
-
-                        uploadResult.fold(
-                            onSuccess = { count ->
-                                uploadedCount = count
-                                affectedPrefixes.addAll(localChanges.map { it.titlePrefix })
-                            },
-                            onFailure = { e ->
-                                AppLogger.e(TAG, "Failed to upload to server", e)
-                                // Don't fail the entire sync, just log the error
-                            }
-                        )
-                    }
                 }
 
                 // STEP 3: Update last sync time

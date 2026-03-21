@@ -26,7 +26,7 @@ class SyncPadApp : Application() {
 
     private fun checkSecrets() {
         // Log warnings for missing secrets
-        // The app will still work without them, but sync features will be limited
+        // The app will still work without them, but sync and update features will be limited
         if (BuildConfig.SYNC_API_KEY.isEmpty()) {
             AppLogger.logSecretsMissing("SYNC_API_KEY")
         }

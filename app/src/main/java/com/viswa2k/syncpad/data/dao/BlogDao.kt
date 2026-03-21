@@ -253,10 +253,36 @@ interface BlogDao {
      */
     @Query("""
         SELECT * FROM blogs
-        WHERE (created_at > :afterTimestamp OR updated_at > :afterTimestamp) AND is_deleted = 0
+                WHERE (created_at > :afterTimestamp OR updated_at > :afterTimestamp)
+                    AND is_deleted = 0
+                    AND device_id = :deviceId
         ORDER BY updated_at ASC
     """)
-    suspend fun getBlogsForSync(afterTimestamp: Long): List<BlogEntity>
+        suspend fun getBlogsForSync(afterTimestamp: Long, deviceId: String): List<BlogEntity>
+
+        /**
+         * Get a bounded batch of blogs that need to be synced.
+         * Uses a stable cursor on (updated_at, id) to avoid loading the full result set into memory.
+         */
+        @Query("""
+                SELECT * FROM blogs
+                WHERE (created_at > :afterTimestamp OR updated_at > :afterTimestamp)
+                    AND is_deleted = 0
+                    AND device_id = :deviceId
+                    AND (
+                        updated_at > :cursorUpdatedAt
+                        OR (updated_at = :cursorUpdatedAt AND id > :cursorId)
+                    )
+                ORDER BY updated_at ASC, id ASC
+                LIMIT :limit
+        """)
+        suspend fun getBlogsForSyncBatch(
+                afterTimestamp: Long,
+                deviceId: String,
+                cursorUpdatedAt: Long,
+                cursorId: Long,
+                limit: Int
+        ): List<BlogEntity>
 
     /**
      * Get the title_prefix for a blog by ID.

@@ -35,6 +35,7 @@ class BlogRepository @Inject constructor(
         private const val TAG = "BlogRepository"
         private const val PAGE_SIZE = 50
         const val SYNC_BATCH_SIZE = 500 // Batch size for sync operations
+        const val SYNC_UPLOAD_BATCH_SIZE = 100 // Keep upload memory bounded for large note content
         private const val SQLITE_MAX_VARIABLE_NUMBER = 900
     }
 
@@ -350,14 +351,42 @@ class BlogRepository @Inject constructor(
      * Get blogs that need to be synced.
      * Returns blogs created or updated after the given timestamp.
      */
-    suspend fun getBlogsForSync(afterTimestamp: Long): Result<List<BlogEntity>> {
+    suspend fun getBlogsForSync(afterTimestamp: Long, deviceId: String): Result<List<BlogEntity>> {
         return withContext(Dispatchers.IO) {
             try {
-                val blogs = blogDao.getBlogsForSync(afterTimestamp)
-                AppLogger.d(TAG, "Found ${blogs.size} blogs for sync after $afterTimestamp")
+                val blogs = blogDao.getBlogsForSync(afterTimestamp, deviceId)
+                AppLogger.d(TAG, "Found ${blogs.size} local blogs for sync after $afterTimestamp (device_id=$deviceId)")
                 Result.success(blogs)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error getting blogs for sync", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Get a single bounded batch of blogs that need to be synced.
+     * This prevents large in-memory allocations when many notes changed locally.
+     */
+    suspend fun getBlogsForSyncBatch(
+        afterTimestamp: Long,
+        deviceId: String,
+        cursorUpdatedAt: Long,
+        cursorId: Long,
+        limit: Int = SYNC_UPLOAD_BATCH_SIZE
+    ): Result<List<BlogEntity>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val blogs = blogDao.getBlogsForSyncBatch(
+                    afterTimestamp = afterTimestamp,
+                    deviceId = deviceId,
+                    cursorUpdatedAt = cursorUpdatedAt,
+                    cursorId = cursorId,
+                    limit = limit
+                )
+                Result.success(blogs)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error getting batched blogs for sync", e)
                 Result.failure(e)
             }
         }

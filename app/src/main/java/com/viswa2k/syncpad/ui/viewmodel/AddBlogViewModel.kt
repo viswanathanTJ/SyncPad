@@ -120,7 +120,8 @@ class AddBlogViewModel @Inject constructor(
                     title = finalTitle,
                     content = content,
                     titlePrefix = titlePrefix,
-                    updatedAt = now
+                    updatedAt = now,
+                    deviceId = Build.MODEL
                 ) ?: BlogEntity(
                     title = finalTitle,
                     content = content,

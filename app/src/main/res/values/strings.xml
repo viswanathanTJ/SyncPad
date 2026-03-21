@@ -1,3 +1,16 @@
 <resources>
     <string name="app_name">SyncPad</string>
+    <string name="update_available">Update Available</string>
+    <string name="update_now">Update Now</string>
+    <string name="install_update">Install Update</string>
+    <string name="downloading_update">Downloading Update</string>
+    <string name="download_complete_tap_install">Download complete! Tap install to update the app.</string>
+    <string name="ready_to_install">Ready to Install</string>
+    <string name="required_update">⚠️ Required Update</string>
+    <string name="whats_new">What’s New</string>
+    <string name="later">Later</string>
+    <string name="cancel">Cancel</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="retry">Retry</string>
+    <string name="update_failed">Update Failed</string>
 </resources>

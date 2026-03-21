@@ -2,6 +2,10 @@ package com.viswa2k.syncpad.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.viswa2k.syncpad.BuildConfig
+import com.viswa2k.syncpad.data.update.AppUpdateManager
+import com.viswa2k.syncpad.data.update.UpdateCheckResult
+import com.viswa2k.syncpad.data.update.UpdateState
 import com.viswa2k.syncpad.repository.BlogRepository
 import com.viswa2k.syncpad.repository.PrefixIndexRepository
 import com.viswa2k.syncpad.repository.SettingsRepository
@@ -30,7 +34,8 @@ class SettingsViewModel @Inject constructor(
     private val syncRepository: SyncRepository,
     private val blogRepository: BlogRepository,
     private val prefixIndexRepository: PrefixIndexRepository,
-    private val syncManager: SyncManager
+    private val syncManager: SyncManager,
+    private val appUpdateManager: AppUpdateManager
 ) : ViewModel() {
 
     companion object {
@@ -93,6 +98,17 @@ class SettingsViewModel @Inject constructor(
 
     private val _indexState = MutableStateFlow<IndexState>(IndexState.Idle)
     val indexState: StateFlow<IndexState> = _indexState.asStateFlow()
+
+    // ============================================
+    // UPDATE STATE
+    // ============================================
+
+    val updateState: StateFlow<UpdateState> = appUpdateManager.updateState
+
+    private val _updateMessage = MutableStateFlow<String?>(null)
+    val updateMessage: StateFlow<String?> = _updateMessage.asStateFlow()
+
+    val appVersionName: String = BuildConfig.VERSION_NAME
 
     init {
         // Observe sync progress for hard sync UI updates
@@ -190,6 +206,44 @@ class SettingsViewModel @Inject constructor(
                 AppLogger.e(TAG, "Error setting show quick nav FAB", e)
             }
         }
+    }
+
+    fun setAutoCheckUpdates(enabled: Boolean) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.setAutoCheckUpdates(enabled)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error setting auto updates", e)
+            }
+        }
+    }
+
+    fun checkForUpdates() {
+        viewModelScope.launch {
+            try {
+                _updateMessage.value = null
+                when (val result = appUpdateManager.forceCheckForUpdate()) {
+                    is UpdateCheckResult.NoUpdate -> {
+                        _updateMessage.value = "You're on the latest version"
+                    }
+
+                    is UpdateCheckResult.UpdateAvailable -> {
+                        _updateMessage.value = "Update ${result.info.versionName} is available"
+                    }
+
+                    is UpdateCheckResult.Error -> {
+                        _updateMessage.value = "Failed to check: ${result.message}"
+                    }
+                }
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "Error checking for updates", e)
+                _updateMessage.value = "Failed to check: ${e.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    fun clearUpdateMessage() {
+        _updateMessage.value = null
     }
 
     // ============================================
