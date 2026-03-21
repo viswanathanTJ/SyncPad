@@ -18,9 +18,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -140,12 +137,10 @@ class SyncManager @Inject constructor(
      * The result can be observed via lastSyncResult StateFlow.
      */
     fun launchHardSync() {
-        if (!isSyncRunning.compareAndSet(false, true)) {
+        if (isSyncRunning.get()) {
             AppLogger.w(TAG, "launchHardSync: Sync already running, skipping")
             return
         }
-        // Reset immediately — performHardSync will set it again via its own flow
-        isSyncRunning.set(false)
         syncScope.launch {
             val result = performHardSync()
             _lastSyncResult.value = result
@@ -158,12 +153,10 @@ class SyncManager @Inject constructor(
      * The result can be observed via lastSyncResult StateFlow.
      */
     fun launchIncrementalSync() {
-        if (!isSyncRunning.compareAndSet(false, true)) {
+        if (isSyncRunning.get()) {
             AppLogger.w(TAG, "launchIncrementalSync: Sync already running, skipping")
             return
         }
-        // Reset immediately — performIncrementalSync will set it again via its own flow
-        isSyncRunning.set(false)
         syncScope.launch {
             val result = performIncrementalSync()
             _lastSyncResult.value = result
@@ -237,8 +230,7 @@ class SyncManager @Inject constructor(
 
                 // Get last sync time
                 val lastSyncTime = syncRepository.getLastSyncTime().getOrNull() ?: 0L
-                val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                AppLogger.i(TAG, "Last sync time: $lastSyncTime (${dateFormat.format(Date(lastSyncTime))})")
+                AppLogger.i(TAG, "Last sync time: $lastSyncTime")
 
                 // Check if we're resuming an interrupted sync
                 val resumeFromId = syncRepository.getSyncLastId().getOrNull()
@@ -756,6 +748,22 @@ class SyncManager @Inject constructor(
     }
 
     /**
+     * Restore a blog locally after a failed server delete.
+     * Re-inserts the backup, notifies data change, and reindexes the prefix.
+     */
+    private suspend fun restoreLocalBlog(blogBackup: BlogEntity, blogPrefix: String?) {
+        blogRepository.insertBlogSilent(blogBackup)
+        blogRepository.notifyDataChanged()
+        blogPrefix?.let { prefix ->
+            try {
+                prefixIndexRepository.partialUpdate(setOf(prefix))
+            } catch (reindexError: Exception) {
+                AppLogger.e(TAG, "Error reindexing after restore", reindexError)
+            }
+        }
+    }
+
+    /**
      * Launch server delete in application scope.
      * This survives ViewModel destruction (navigation).
      * On failure, restores the blog locally and reindexes.
@@ -779,33 +787,12 @@ class SyncManager @Inject constructor(
                     },
                     onFailure = { e ->
                         AppLogger.e(TAG, "Server delete failed, restoring local: $blogId", e)
-                        // Restore the blog locally
-                        blogRepository.insertBlogSilent(blogBackup)
-                        blogRepository.notifyDataChanged()
-
-                        // Reindex to restore the prefix
-                        blogPrefix?.let { prefix ->
-                            try {
-                                prefixIndexRepository.partialUpdate(setOf(prefix))
-                            } catch (reindexError: Exception) {
-                                AppLogger.e(TAG, "Error reindexing after restore", reindexError)
-                            }
-                        }
+                        restoreLocalBlog(blogBackup, blogPrefix)
                     }
                 )
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Exception in launchServerDelete: $blogId", e)
-                // Restore the blog locally on any exception
-                blogRepository.insertBlogSilent(blogBackup)
-                blogRepository.notifyDataChanged()
-
-                blogPrefix?.let { prefix ->
-                    try {
-                        prefixIndexRepository.partialUpdate(setOf(prefix))
-                    } catch (reindexError: Exception) {
-                        AppLogger.e(TAG, "Error reindexing after restore", reindexError)
-                    }
-                }
+                restoreLocalBlog(blogBackup, blogPrefix)
             }
         }
     }

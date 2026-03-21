@@ -59,6 +59,6 @@ interface SyncMetaDao {
     suspend fun clearSyncProgress() {
         delete(SyncMetaEntity.KEY_SYNC_LAST_ID)
         delete(SyncMetaEntity.KEY_SYNC_TOTAL_EXPECTED)
-        upsert(SyncMetaEntity(key = SyncMetaEntity.KEY_SYNC_IN_PROGRESS, value = "false"))
+        upsert(SyncMetaEntity(key = SyncMetaEntity.KEY_SYNC_IN_PROGRESS, value = false.toString()))
     }
 }

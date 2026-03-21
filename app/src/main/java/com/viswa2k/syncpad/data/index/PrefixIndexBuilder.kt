@@ -60,74 +60,83 @@ class PrefixIndexBuilder @Inject constructor(
     suspend fun fullRebuild(maxDepth: Int = DEFAULT_MAX_DEPTH): Result<Int> {
         return mutex.withLock {
             withContext(Dispatchers.IO) {
-                try {
-                    AppLogger.d(TAG, "Starting full prefix index rebuild with maxDepth=$maxDepth")
+                fullRebuildInternal(maxDepth)
+            }
+        }
+    }
 
-                    val allPrefixIndices = mutableListOf<PrefixIndexEntity>()
+    /**
+     * Internal rebuild logic that does NOT acquire the mutex.
+     * Called from both fullRebuild (after acquiring the lock) and
+     * partialUpdate's fallback (which already holds the lock).
+     */
+    private suspend fun fullRebuildInternal(maxDepth: Int): Result<Int> {
+        return try {
+            AppLogger.d(TAG, "Starting full prefix index rebuild with maxDepth=$maxDepth")
 
-                    // Build depth 1 first (always include all single-letter prefixes)
-                    val depth1Counts = blogDao.getPrefixCounts(1)
-                    val prefixesNeedingExpansion = mutableSetOf<String>()
+            val allPrefixIndices = mutableListOf<PrefixIndexEntity>()
 
-                    for (prefixCount in depth1Counts) {
-                        if (prefixCount.count > 0) {
-                            allPrefixIndices.add(
-                                PrefixIndexEntity(
-                                    prefix = prefixCount.prefix,
-                                    depth = 1,
-                                    count = prefixCount.count,
-                                    firstBlogId = prefixCount.firstId
-                                )
-                            )
-                            if (prefixCount.count > EXPANSION_THRESHOLD) {
-                                prefixesNeedingExpansion.add(prefixCount.prefix)
-                            }
-                        }
+            // Build depth 1 first (always include all single-letter prefixes)
+            val depth1Counts = blogDao.getPrefixCounts(1)
+            val prefixesNeedingExpansion = mutableSetOf<String>()
+
+            for (prefixCount in depth1Counts) {
+                if (prefixCount.count > 0) {
+                    allPrefixIndices.add(
+                        PrefixIndexEntity(
+                            prefix = prefixCount.prefix,
+                            depth = 1,
+                            count = prefixCount.count,
+                            firstBlogId = prefixCount.firstId
+                        )
+                    )
+                    if (prefixCount.count > EXPANSION_THRESHOLD) {
+                        prefixesNeedingExpansion.add(prefixCount.prefix)
                     }
-
-                    AppLogger.d(TAG, "Built index for depth 1: ${depth1Counts.size} prefixes, ${prefixesNeedingExpansion.size} need expansion")
-
-                    // Build deeper depths only for prefixes that exceed threshold
-                    for (depth in 2..maxDepth) {
-                        if (prefixesNeedingExpansion.isEmpty()) break
-
-                        val prefixCounts = blogDao.getPrefixCounts(depth)
-                        val nextExpansion = mutableSetOf<String>()
-
-                        for (prefixCount in prefixCounts) {
-                            // Only include if its parent prefix needed expansion
-                            val parentPrefix = prefixCount.prefix.take(depth - 1)
-                            if (parentPrefix in prefixesNeedingExpansion && prefixCount.count > 0) {
-                                allPrefixIndices.add(
-                                    PrefixIndexEntity(
-                                        prefix = prefixCount.prefix,
-                                        depth = depth,
-                                        count = prefixCount.count,
-                                        firstBlogId = prefixCount.firstId
-                                    )
-                                )
-                                if (prefixCount.count > EXPANSION_THRESHOLD) {
-                                    nextExpansion.add(prefixCount.prefix)
-                                }
-                            }
-                        }
-
-                        AppLogger.d(TAG, "Built index for depth $depth: ${nextExpansion.size} need further expansion")
-                        prefixesNeedingExpansion.clear()
-                        prefixesNeedingExpansion.addAll(nextExpansion)
-                    }
-
-                    // Replace all indices in a transaction
-                    prefixIndexDao.replaceAll(allPrefixIndices)
-
-                    AppLogger.i(TAG, "Prefix index rebuild complete. Total entries: ${allPrefixIndices.size}")
-                    Result.success(allPrefixIndices.size)
-
-                } catch (e: Exception) {
-                    AppLogger.e(TAG, "Error during full prefix index rebuild", e)
-                    Result.failure(e)
                 }
             }
+
+            AppLogger.d(TAG, "Built index for depth 1: ${depth1Counts.size} prefixes, ${prefixesNeedingExpansion.size} need expansion")
+
+            // Build deeper depths only for prefixes that exceed threshold
+            for (depth in 2..maxDepth) {
+                if (prefixesNeedingExpansion.isEmpty()) break
+
+                val prefixCounts = blogDao.getPrefixCounts(depth)
+                val nextExpansion = mutableSetOf<String>()
+
+                for (prefixCount in prefixCounts) {
+                    // Only include if its parent prefix needed expansion
+                    val parentPrefix = prefixCount.prefix.take(depth - 1)
+                    if (parentPrefix in prefixesNeedingExpansion && prefixCount.count > 0) {
+                        allPrefixIndices.add(
+                            PrefixIndexEntity(
+                                prefix = prefixCount.prefix,
+                                depth = depth,
+                                count = prefixCount.count,
+                                firstBlogId = prefixCount.firstId
+                            )
+                        )
+                        if (prefixCount.count > EXPANSION_THRESHOLD) {
+                            nextExpansion.add(prefixCount.prefix)
+                        }
+                    }
+                }
+
+                AppLogger.d(TAG, "Built index for depth $depth: ${nextExpansion.size} need further expansion")
+                prefixesNeedingExpansion.clear()
+                prefixesNeedingExpansion.addAll(nextExpansion)
+            }
+
+            // Replace all indices in a transaction
+            prefixIndexDao.replaceAll(allPrefixIndices)
+
+            AppLogger.i(TAG, "Prefix index rebuild complete. Total entries: ${allPrefixIndices.size}")
+            Result.success(allPrefixIndices.size)
+
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Error during full prefix index rebuild", e)
+            Result.failure(e)
         }
     }
 
@@ -157,9 +166,7 @@ class PrefixIndexBuilder @Inject constructor(
                     // For large numbers of prefixes, full rebuild is faster
                     if (affectedPrefixes.size > 100) {
                         AppLogger.d(TAG, "${affectedPrefixes.size} prefixes affected, switching to full rebuild")
-                        // Release mutex before calling fullRebuild (which also acquires it)
-                        // Actually, since we're inside withLock, we need to call the internal logic directly
-                        // Instead, just do a full rebuild inline here
+                        return@withContext fullRebuildInternal(maxDepth)
                     }
 
                     AppLogger.d(TAG, "Starting partial prefix index update for ${affectedPrefixes.size} prefixes")

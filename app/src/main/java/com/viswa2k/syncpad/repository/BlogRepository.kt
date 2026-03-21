@@ -429,11 +429,11 @@ class BlogRepository @Inject constructor(
                 if (ids.isEmpty()) {
                     return@withContext Result.success(emptyList())
                 }
-                val allPrefixes = mutableListOf<String>()
+                val allPrefixes = mutableSetOf<String>()
                 ids.chunked(SQLITE_MAX_VARIABLE_NUMBER).forEach { chunk ->
                     allPrefixes.addAll(blogDao.getTitlePrefixesByIds(chunk))
                 }
-                Result.success(allPrefixes.distinct())
+                Result.success(allPrefixes.toList())
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error getting title prefixes by IDs", e)
                 Result.failure(e)

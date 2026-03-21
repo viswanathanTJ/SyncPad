@@ -8,7 +8,6 @@ import com.google.gson.GsonBuilder
 import com.google.gson.annotations.SerializedName
 import com.google.gson.stream.JsonReader
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.isActive
 import java.net.SocketException
 import java.net.UnknownHostException
 import kotlinx.coroutines.withContext
@@ -109,8 +108,6 @@ class SupabaseApi @Inject constructor() {
     private val baseUrl: String = BuildConfig.SYNC_BASE_URL
     private val apiKey: String = BuildConfig.SYNC_API_KEY
 
-    private fun isSyncConfigured(): Boolean = baseUrl.isNotEmpty() && apiKey.isNotEmpty()
-
     private val gson: Gson = GsonBuilder()
         .setDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
         .create()
@@ -149,10 +146,6 @@ class SupabaseApi @Inject constructor() {
     ): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
-                }
-
                 var totalCount = 0
                 var currentAfterId = 0L
                 var hasMore = true
@@ -242,10 +235,6 @@ class SupabaseApi @Inject constructor() {
     suspend fun getServerCount(afterTimestamp: Long): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
-                }
-
                 val url = "$baseUrl/rest/v1/blogs?select=id" +
                         "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
                         "&is_deleted=eq.false"
@@ -288,69 +277,6 @@ class SupabaseApi @Inject constructor() {
     }
 
     /**
-     * Get all blog IDs from the server.
-     * Used to detect direct deletions by comparing with local IDs.
-     *
-     * @return Result containing set of all server blog IDs
-     */
-    suspend fun getAllBlogIds(): Result<Set<Long>> {
-        return withContext(Dispatchers.IO) {
-            try {
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
-                }
-
-                val allIds = mutableSetOf<Long>()
-                var offset = 0
-                var hasMore = true
-
-                while (hasMore) {
-                    val url = "$baseUrl/rest/v1/blogs?select=id" +
-                            "&order=id.asc" +
-                            "&limit=$PAGE_SIZE" +
-                            "&offset=$offset"
-
-                    val request = Request.Builder()
-                        .url(url)
-                        .addHeader("apikey", apiKey)
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .addHeader("Content-Type", "application/json")
-                        .get()
-                        .build()
-
-                    AppLogger.d(TAG, "Fetching all blog IDs, offset $offset")
-
-                    val response = client.newCall(request).execute()
-
-                    response.use { resp ->
-                        if (!resp.isSuccessful) {
-                            val errorBody = resp.body?.string() ?: "Unknown error"
-                            AppLogger.e(TAG, "API error fetching IDs: ${resp.code} - $errorBody")
-                            return@withContext Result.failure(Exception("Failed to fetch IDs: ${resp.code}"))
-                        }
-
-                        val body = resp.body?.string() ?: "[]"
-                        val idObjects = gson.fromJson(body, Array<DeletedIdDto>::class.java) ?: emptyArray()
-                        val pageIds = idObjects.mapNotNull { it.id }
-
-                        allIds.addAll(pageIds)
-
-                        hasMore = pageIds.size == PAGE_SIZE
-                        offset += PAGE_SIZE
-                    }
-                }
-
-                AppLogger.i(TAG, "Fetched ${allIds.size} blog IDs from server")
-                Result.success(allIds)
-
-            } catch (e: Exception) {
-                AppLogger.e(TAG, "Error fetching all blog IDs", e)
-                Result.failure(e)
-            }
-        }
-    }
-
-    /**
      * Stream blogs from Supabase starting after a specific blog ID.
      * Used for resume-on-kill: continues from where sync stopped.
      *
@@ -366,10 +292,6 @@ class SupabaseApi @Inject constructor() {
     ): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
-                }
-
                 var totalCount = 0
                 var currentAfterId = afterId
                 var hasMore = true
@@ -460,10 +382,6 @@ class SupabaseApi @Inject constructor() {
     suspend fun streamAllBlogs(onBlog: suspend (BlogDto) -> Unit): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
-                }
-
                 var totalCount = 0
                 var currentAfterId = 0L
                 var hasMore = true
@@ -541,116 +459,6 @@ class SupabaseApi @Inject constructor() {
     }
 
     /**
-     * Get all blogs from Supabase with pagination.
-     */
-    suspend fun getAllBlogs(): Result<List<BlogDto>> {
-        return withContext(Dispatchers.IO) {
-            try {
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
-                }
-
-                val allBlogs = mutableListOf<BlogDto>()
-                var offset = 0
-                var hasMore = true
-
-                while (hasMore) {
-                    val url = "$baseUrl/rest/v1/blogs?select=*" +
-                            "&order=id.asc" +
-                            "&limit=$PAGE_SIZE" +
-                            "&offset=$offset"
-
-                    val request = Request.Builder()
-                        .url(url)
-                        .addHeader("apikey", apiKey)
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .addHeader("Content-Type", "application/json")
-                        .get()
-                        .build()
-
-                    AppLogger.d(TAG, "Fetching all blogs page at offset $offset")
-
-                    val response = client.newCall(request).execute()
-
-                    response.use { resp ->
-                        if (!resp.isSuccessful) {
-                            val errorBody = resp.body?.string() ?: "Unknown error"
-                            AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
-                            return@withContext Result.failure(Exception("Failed to fetch blogs: ${resp.code}"))
-                        }
-
-                        val body = resp.body?.string() ?: "[]"
-                        val blogs = gson.fromJson(body, Array<BlogDto>::class.java).toList()
-
-                        allBlogs.addAll(blogs)
-
-                        // Check if we need to fetch more pages
-                        hasMore = blogs.size == PAGE_SIZE
-                        offset += PAGE_SIZE
-
-                        AppLogger.i(TAG, "Fetched page: ${blogs.size} blogs, total: ${allBlogs.size}")
-                    }
-                }
-
-                AppLogger.i(TAG, "Downloaded ${allBlogs.size} total blogs from server")
-                Result.success(allBlogs)
-
-            } catch (e: Exception) {
-                AppLogger.e(TAG, "Error fetching all blogs", e)
-                Result.failure(e)
-            }
-        }
-    }
-
-    /**
-     * Upload/upsert a blog to Supabase.
-     */
-    suspend fun upsertBlog(blog: BlogDto): Result<BlogDto> {
-        return withContext(Dispatchers.IO) {
-            try {
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
-                }
-
-                val url = "$baseUrl/rest/v1/blogs"
-                val json = gson.toJson(blog)
-
-                val request = Request.Builder()
-                    .url(url)
-                    .addHeader("apikey", apiKey)
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .addHeader("Content-Type", "application/json")
-                    .addHeader("Prefer", "resolution=merge-duplicates,return=representation")
-                    .post(json.toRequestBody(JSON_MEDIA_TYPE))
-                    .build()
-
-                AppLogger.d(TAG, "Upserting blog: ${blog.title}")
-
-                val response = client.newCall(request).execute()
-
-                response.use { resp ->
-                    if (!resp.isSuccessful) {
-                        val errorBody = resp.body?.string() ?: "Unknown error"
-                        AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
-                        return@withContext Result.failure(Exception("Failed to upload blog: ${resp.code}"))
-                    }
-
-                    val body = resp.body?.string() ?: "[]"
-                    val result = gson.fromJson(body, Array<BlogDto>::class.java).firstOrNull()
-                        ?: return@withContext Result.failure(Exception("No result returned"))
-
-                    AppLogger.i(TAG, "Uploaded blog: ${result.title}")
-                    Result.success(result)
-                }
-
-            } catch (e: Exception) {
-                AppLogger.e(TAG, "Error upserting blog", e)
-                Result.failure(e)
-            }
-        }
-    }
-
-    /**
      * Upload multiple blogs to Supabase in batches.
      */
     suspend fun upsertBlogs(blogs: List<BlogDto>): Result<Int> {
@@ -658,10 +466,6 @@ class SupabaseApi @Inject constructor() {
             try {
                 if (blogs.isEmpty()) {
                     return@withContext Result.success(0)
-                }
-
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
                 }
 
                 var totalUploaded = 0
@@ -715,10 +519,6 @@ class SupabaseApi @Inject constructor() {
     suspend fun softDeleteOnServer(blogId: Long): Result<Unit> {
         return withContext(Dispatchers.IO) {
             try {
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
-                }
-
                 val now = System.currentTimeMillis()
                 val url = "$baseUrl/rest/v1/blogs?id=eq.$blogId"
 
@@ -779,10 +579,6 @@ class SupabaseApi @Inject constructor() {
     suspend fun getDeletedBlogIds(afterTimestamp: Long): Result<List<Long>> {
         return withContext(Dispatchers.IO) {
             try {
-                if (!isSyncConfigured()) {
-                    return@withContext Result.failure(Exception("Sync not configured"))
-                }
-
                 val allIds = mutableListOf<Long>()
                 var offset = 0
                 var hasMore = true
