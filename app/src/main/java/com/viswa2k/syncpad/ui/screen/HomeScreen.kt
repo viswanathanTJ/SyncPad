@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -45,6 +46,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -113,6 +115,7 @@ fun HomeScreen(
     val maxDepth by viewModel.maxDepth.collectAsStateWithLifecycle()
     val indexState by viewModel.indexState.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val syncActivityLogs by viewModel.syncActivityLogs.collectAsStateWithLifecycle()
     val sortOrder by viewModel.sortOrder.collectAsStateWithLifecycle()
     val showSidebar by viewModel.showSidebar.collectAsStateWithLifecycle()
     val showQuickNavFab by viewModel.showQuickNavFab.collectAsStateWithLifecycle()
@@ -123,6 +126,7 @@ fun HomeScreen(
     
     // Quick navigation popup state
     var showQuickNav by remember { mutableStateOf(false) }
+    var showSyncLogsModal by remember { mutableStateOf(false) }
     
     // Track lifecycle to resume sync when coming back from background
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -206,7 +210,9 @@ fun HomeScreen(
             Column {
                 TopAppBar(
                     title = {
-                        Column {
+                        Column(
+                            modifier = Modifier.clickable { showSyncLogsModal = true }
+                        ) {
                             Text("SyncPad")
                             when {
                                 // Don't show sync status in title when list is empty
@@ -597,6 +603,77 @@ fun HomeScreen(
             },
             onDismiss = { showQuickNav = false }
         )
+    }
+
+    if (showSyncLogsModal) {
+        SyncActivityLogDialog(
+            logs = syncActivityLogs,
+            onDismiss = { showSyncLogsModal = false }
+        )
+    }
+}
+
+@Composable
+private fun SyncActivityLogDialog(
+    logs: List<String>,
+    onDismiss: () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Text(
+                    text = "Sync Activity Logs",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.size(12.dp))
+
+                if (logs.isEmpty()) {
+                    Text(
+                        text = "No sync logs yet. Start a sync and tap title again.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(320.dp)
+                    ) {
+                        items(logs.size) { index ->
+                            Text(
+                                text = logs[index],
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.size(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    OutlinedButton(onClick = onDismiss) {
+                        Text("Close")
+                    }
+                }
+            }
+        }
     }
 }
 

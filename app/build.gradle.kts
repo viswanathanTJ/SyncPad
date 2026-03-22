@@ -32,8 +32,8 @@ android {
         applicationId = "com.viswa2k.syncpad"
         minSdk = 33
         targetSdk = 35
-        versionCode = 10503
-        versionName = "1.5.3"
+        versionCode = 10504
+        versionName = "1.5.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

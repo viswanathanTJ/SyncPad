@@ -14,6 +14,8 @@ import os
 import sys
 from pathlib import Path
 
+import requests
+
 try:
     from supabase import create_client
 except ImportError:
@@ -96,30 +98,39 @@ def main() -> None:
     print("🔗 Connecting to Supabase...")
     supabase = create_client(url, key)
 
+    # Ensure the storage bucket exists
+    try:
+        existing_buckets = supabase.storage.list_buckets()
+        bucket_names = [b.name for b in existing_buckets]
+        if args.bucket not in bucket_names:
+            print(f"📁 Creating storage bucket '{args.bucket}'...")
+            supabase.storage.create_bucket(args.bucket, options={"public": True})
+    except Exception as exc:
+        print(f"⚠️  Could not verify/create bucket '{args.bucket}': {exc}")
+        print("   Assuming bucket already exists — proceeding with upload...")
+
     storage_name = f"syncpad-v{args.version_name}.apk"
     print(f"📦 Uploading {storage_name} ({file_size / (1024 * 1024):.2f} MB)")
 
-    try:
-        with apk_path.open("rb") as handle:
-            supabase.storage.from_(args.bucket).upload(
-                path=storage_name,
-                file=handle,
-                file_options={"content-type": "application/vnd.android.package-archive"},
-            )
-    except Exception as exc:
-        if "Duplicate" in str(exc) or "already exists" in str(exc).lower():
-            print("   ⚠️ Release already exists, updating existing APK...")
-            with apk_path.open("rb") as handle:
-                supabase.storage.from_(args.bucket).update(
-                    path=storage_name,
-                    file=handle,
-                    file_options={"content-type": "application/vnd.android.package-archive"},
-                )
-        else:
-            print(f"❌ Upload failed: {exc}")
-            sys.exit(1)
+    upload_url = f"{url}/storage/v1/object/{args.bucket}/{storage_name}"
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/vnd.android.package-archive",
+    }
 
-    public_url = supabase.storage.from_(args.bucket).get_public_url(storage_name)
+    with apk_path.open("rb") as handle:
+        resp = requests.post(upload_url, headers=headers, data=handle)
+
+    if resp.status_code == 409 or (resp.status_code >= 400 and ("already exists" in resp.text.lower() or "duplicate" in resp.text.lower())):
+        print("   ⚠️ Release already exists, updating existing APK...")
+        with apk_path.open("rb") as handle:
+            resp = requests.put(upload_url, headers=headers, data=handle)
+
+    if not resp.ok:
+        print(f"❌ Upload failed: {resp.status_code} {resp.text}")
+        sys.exit(1)
+
+    public_url = f"{url}/storage/v1/object/public/{args.bucket}/{storage_name}"
     version_record = {
         "version_code": version_code,
         "version_name": args.version_name,

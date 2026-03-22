@@ -19,6 +19,10 @@
 -keep class com.viswa2k.syncpad.sync.BlogDto { *; }
 -keepclassmembers class com.viswa2k.syncpad.sync.BlogDto { *; }
 
+# Keep app update DTO used for Gson deserialization
+-keep class com.viswa2k.syncpad.data.update.AppVersionDto { *; }
+-keepclassmembers class com.viswa2k.syncpad.data.update.AppVersionDto { *; }
+
 # Keep inner classes used by Supabase API (Gson deserialization)
 -keep class com.viswa2k.syncpad.sync.SupabaseApi$DeletedIdDto { *; }
 -keepclassmembers class com.viswa2k.syncpad.sync.SupabaseApi$DeletedIdDto { *; }

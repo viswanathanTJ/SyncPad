@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/Users/viswa-17217/.local/bin/uv run --with supabase
 """
 Create a signed SyncPad release APK and optionally upload it to Supabase.
 

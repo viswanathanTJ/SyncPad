@@ -37,5 +37,5 @@ begin
 end $$;
 
 -- Make sure the bucket exists and is public:
--- insert into storage.buckets (id, name, public) values ('app-releases', 'app-releases', true)
--- on conflict (id) do nothing;
+insert into storage.buckets (id, name, public) values ('app-releases', 'app-releases', true)
+on conflict (id) do nothing;

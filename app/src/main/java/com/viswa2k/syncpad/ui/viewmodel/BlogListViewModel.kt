@@ -188,6 +188,11 @@ class BlogListViewModel @Inject constructor(
     private val _syncState = MutableStateFlow<SyncState>(SyncState.Idle)
     val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
 
+    /**
+     * Numbered sync activity log entries for UI modal display.
+     */
+    val syncActivityLogs: StateFlow<List<String>> = syncManager.syncActivityLogs
+
     init {
         loadAlphabetIndex()
         
