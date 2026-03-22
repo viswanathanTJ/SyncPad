@@ -110,7 +110,7 @@ class SupabaseApiAutomatedQATest {
         )
 
         var received = 0
-        val result = api.streamBlogsAfterId(afterTimestamp = 0L, afterId = 1199L) { received++ }
+        val result = api.streamBlogsAfter(afterTimestamp = 0L, afterId = 1199L) { received++ }
 
         assertTrue(result.isSuccess)
         assertEquals(2, result.getOrNull())

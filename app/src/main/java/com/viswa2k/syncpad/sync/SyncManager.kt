@@ -447,37 +447,23 @@ class SyncManager @Inject constructor(
                     batchBuffer.clear() // Release memory immediately
                 }
 
-                // Use resume-aware streaming if we're resuming
-                val streamResult = if (isResuming) {
-                    supabaseApi.streamBlogsAfterId(lastSyncTime, resumeFromId!!) { blogDto ->
-                        val entity = blogDto.toBlogEntity()
-                        batchBuffer.add(entity)
-                        receivedFromServer++
+                // Use resume-aware streaming: pass afterId when resuming, default 0 for fresh sync
+                val streamResult = supabaseApi.streamBlogsAfter(
+                    afterTimestamp = lastSyncTime,
+                    afterId = if (isResuming) resumeFromId!! else 0L
+                ) { blogDto ->
+                    val entity = blogDto.toBlogEntity()
+                    batchBuffer.add(entity)
+                    receivedFromServer++
 
-                        // Flush batch when full
-                        if (batchBuffer.size >= BATCH_INSERT_SIZE) {
-                            flushBatch()
-                            val totalProcessed = alreadyDownloaded + receivedFromServer
-                            updateProgress(
-                                buildDownloadStatus(isResumeMode = true, totalProcessed = totalProcessed),
-                                totalProcessed
-                            )
-                        }
-                    }
-                } else {
-                    supabaseApi.streamBlogsAfter(lastSyncTime) { blogDto ->
-                        val entity = blogDto.toBlogEntity()
-                        batchBuffer.add(entity)
-                        receivedFromServer++
-
-                        // Flush batch when full
-                        if (batchBuffer.size >= BATCH_INSERT_SIZE) {
-                            flushBatch()
-                            updateProgress(
-                                buildDownloadStatus(isResumeMode = false, totalProcessed = receivedFromServer),
-                                receivedFromServer
-                            )
-                        }
+                    // Flush batch when full
+                    if (batchBuffer.size >= BATCH_INSERT_SIZE) {
+                        flushBatch()
+                        val totalProcessed = if (isResuming) alreadyDownloaded + receivedFromServer else receivedFromServer
+                        updateProgress(
+                            buildDownloadStatus(isResumeMode = isResuming, totalProcessed = totalProcessed),
+                            totalProcessed
+                        )
                     }
                 }
 
@@ -778,14 +764,6 @@ class SyncManager @Inject constructor(
      */
     fun isSyncConfigured(): Boolean {
         return BuildConfig.SYNC_API_KEY.isNotEmpty() && BuildConfig.SYNC_BASE_URL.isNotEmpty()
-    }
-
-    /**
-     * Get the sync base URL.
-     * Returns null if not configured.
-     */
-    fun getSyncBaseUrl(): String? {
-        return BuildConfig.SYNC_BASE_URL.ifEmpty { null }
     }
 
     /**

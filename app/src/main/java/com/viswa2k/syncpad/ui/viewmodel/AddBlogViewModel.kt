@@ -6,6 +6,7 @@ import com.viswa2k.syncpad.data.entity.BlogEntity
 import com.viswa2k.syncpad.repository.BlogRepository
 import com.viswa2k.syncpad.repository.PrefixIndexRepository
 import com.viswa2k.syncpad.sync.SyncManager
+import com.viswa2k.syncpad.data.index.PrefixIndexBuilder
 import com.viswa2k.syncpad.ui.state.UiState
 import com.viswa2k.syncpad.util.AppLogger
 import android.os.Build
@@ -28,7 +29,6 @@ class AddBlogViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "AddBlogViewModel"
-        private const val DEFAULT_MAX_DEPTH = 5
     }
 
     // ============================================
@@ -114,7 +114,7 @@ class AddBlogViewModel @Inject constructor(
                 _saveState.value = UiState.Loading
                 
                 val now = System.currentTimeMillis()
-                val titlePrefix = BlogEntity.generateTitlePrefix(finalTitle, DEFAULT_MAX_DEPTH)
+                val titlePrefix = BlogEntity.generateTitlePrefix(finalTitle, PrefixIndexBuilder.DEFAULT_MAX_DEPTH)
                 
                 val blog = currentBlog?.copy(
                     title = finalTitle,

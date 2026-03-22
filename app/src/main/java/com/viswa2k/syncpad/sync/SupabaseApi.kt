@@ -2,6 +2,7 @@ package com.viswa2k.syncpad.sync
 
 import com.viswa2k.syncpad.BuildConfig
 import com.viswa2k.syncpad.data.entity.BlogEntity
+import com.viswa2k.syncpad.data.index.PrefixIndexBuilder
 import com.viswa2k.syncpad.util.AppLogger
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
@@ -37,12 +38,6 @@ data class BlogDto(
     @SerializedName("deleted_at") val deletedAt: Long? = null
 ) {
     companion object {
-        /**
-         * Default max depth for prefix generation.
-         * Should match settings but use 5 as fallback.
-         */
-        const val DEFAULT_MAX_DEPTH = 5
-
         fun fromBlogEntity(entity: BlogEntity): BlogDto {
             return BlogDto(
                 id = entity.id,
@@ -63,7 +58,7 @@ data class BlogDto(
      * This ensures title_prefix = UPPER(SUBSTR(title, 1, maxDepth))
      * regardless of what the server sends.
      */
-    fun toBlogEntity(maxDepth: Int = DEFAULT_MAX_DEPTH): BlogEntity {
+    fun toBlogEntity(maxDepth: Int = PrefixIndexBuilder.DEFAULT_MAX_DEPTH): BlogEntity {
         // ALWAYS recalculate title_prefix locally from title
         val calculatedPrefix = BlogEntity.generateTitlePrefix(title, maxDepth)
 
@@ -182,17 +177,19 @@ class SupabaseApi @Inject constructor(
      * Calls onBlog callback for each blog as it's parsed.
      *
      * @param afterTimestamp Only fetch blogs created/updated after this timestamp
+     * @param afterId Start pagination after this ID (default 0 = from beginning). Use for resume-on-kill.
      * @param onBlog Callback invoked for each blog - should insert to database
      * @return Result with total count of blogs processed
      */
     suspend fun streamBlogsAfter(
         afterTimestamp: Long,
+        afterId: Long = 0L,
         onBlog: suspend (BlogDto) -> Unit
     ): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
                 var totalCount = 0
-                var currentAfterId = 0L
+                var currentAfterId = afterId
                 var hasMore = true
 
                 while (hasMore) {
@@ -342,114 +339,6 @@ class SupabaseApi @Inject constructor(
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Error getting server count", e)
                 Result.failure(e)
-            }
-        }
-    }
-
-    /**
-     * Stream blogs from Supabase starting after a specific blog ID.
-     * Used for resume-on-kill: continues from where sync stopped.
-     *
-     * @param afterTimestamp Only fetch blogs created/updated after this timestamp
-     * @param afterId Only fetch blogs with ID greater than this (for resume)
-     * @param onBlog Callback invoked for each blog
-     * @return Result with total count of blogs processed
-     */
-    suspend fun streamBlogsAfterId(
-        afterTimestamp: Long,
-        afterId: Long,
-        onBlog: suspend (BlogDto) -> Unit
-    ): Result<Int> {
-        return withContext(Dispatchers.IO) {
-            try {
-                var totalCount = 0
-                var currentAfterId = afterId
-                var hasMore = true
-
-                while (hasMore) {
-                    // Use keyset pagination (id > afterId) instead of offset
-                        val url = "$baseUrl/rest/v1/$activeBlogsTableName?select=*" +
-                            "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
-                            "&is_deleted=eq.false" +
-                            "&id=gt.$currentAfterId" +
-                            "&order=id.asc" +
-                            "&limit=$PAGE_SIZE"
-
-                    val request = Request.Builder()
-                        .url(url)
-                        .addHeader("apikey", apiKey)
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .addHeader("Content-Type", "application/json")
-                        .addHeader("Prefer", "return=representation")
-                        .get()
-                        .build()
-
-                    AppLogger.d(TAG, "Streaming blogs after id $currentAfterId")
-
-                    val response = client.newCall(request).execute()
-
-                    // Track page count and lastId outside response block
-                    var pageCount = 0
-                    var lastId = currentAfterId
-                    var retryWithPrimaryTable = false
-
-                    // Use response.use{} to ensure connection is closed even on cancellation
-                    response.use { resp ->
-                        if (!resp.isSuccessful) {
-                            val errorBody = resp.body?.string() ?: "Unknown error"
-                            AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
-
-                            if (shouldFallbackToPrimaryTable(resp.code, errorBody)) {
-                                fallbackToPrimaryTable("${resp.code} / streamBlogsAfterId")
-                                retryWithPrimaryTable = true
-                                return@use
-                            }
-
-                            return@withContext Result.failure(Exception("Failed to fetch blogs: ${resp.code}"))
-                        }
-
-                        val body = resp.body
-                        if (body == null) {
-                            hasMore = false
-                            return@use
-                        }
-
-                        // Stream parse the JSON array
-                        body.byteStream().use { inputStream ->
-                            InputStreamReader(inputStream, Charsets.UTF_8).use { reader ->
-                                JsonReader(reader).use { jsonReader ->
-                                    jsonReader.beginArray()
-                                    while (jsonReader.hasNext()) {
-                                        val blog = gson.fromJson<BlogDto>(jsonReader, BlogDto::class.java)
-                                        onBlog(blog)
-                                        pageCount++
-                                        totalCount++
-                                        blog.id?.let { lastId = it }
-                                    }
-                                    jsonReader.endArray()
-                                }
-                            }
-                        }
-                    }
-
-                    if (retryWithPrimaryTable) {
-                        continue
-                    }
-
-                    AppLogger.d(TAG, "Streamed $pageCount blogs after id, total so far: $totalCount")
-
-                    // Check if we need more pages
-                    hasMore = pageCount == PAGE_SIZE
-                    currentAfterId = lastId
-                }
-
-                AppLogger.i(TAG, "Streaming sync complete: $totalCount blogs processed (resumed from id $afterId)")
-                Result.success(totalCount)
-
-            } catch (e: Exception) {
-                AppLogger.e(TAG, "Error streaming blogs after id", e)
-                val wrappedException = wrapNetworkException(e)
-                Result.failure(wrappedException)
             }
         }
     }
