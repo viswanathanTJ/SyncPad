@@ -214,18 +214,38 @@ class AppUpdateManager @Inject constructor(
             return
         }
 
-        val apkUri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            apkFile
-        )
+        try {
+            // Check if the app has permission to install packages
+            if (!context.packageManager.canRequestPackageInstalls()) {
+                AppLogger.w(TAG, "App does not have install permission, requesting...")
+                val settingsIntent = Intent(
+                    android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${context.packageName}")
+                ).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(settingsIntent)
+                return
+            }
 
-        val installIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(apkUri, "application/vnd.android.package-archive")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+            val apkUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                apkFile
+            )
+
+            AppLogger.i(TAG, "Installing APK from: $apkUri")
+
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+            }
+
+            context.startActivity(installIntent)
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Failed to launch install intent", e)
+            _updateState.value = UpdateState.Error("Install failed: ${e.message}")
         }
-
-        context.startActivity(installIntent)
     }
 
     fun cancelDownload() {

@@ -32,8 +32,8 @@ android {
         applicationId = "com.viswa2k.syncpad"
         minSdk = 33
         targetSdk = 35
-        versionCode = 10500
-        versionName = "1.5"
+        versionCode = 10503
+        versionName = "1.5.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -130,4 +130,10 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
     implementation(libs.gson)
+
+    // Unit testing
+    testImplementation(libs.junit4)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.robolectric)
 }

@@ -97,16 +97,28 @@ class NetworkInterruptedException(message: String, cause: Throwable? = null) : E
  * Uses streaming JSON parsing to avoid OOM with large datasets.
  */
 @Singleton
-class SupabaseApi @Inject constructor() {
+class SupabaseApi @Inject constructor(
+    private val configuredBaseUrl: String = BuildConfig.SYNC_BASE_URL,
+    private val configuredApiKey: String = BuildConfig.SYNC_API_KEY,
+    private val useTestTable: Boolean = false
+) {
 
     companion object {
         private const val TAG = "SupabaseApi"
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
         private const val PAGE_SIZE = 500 // Blogs per page (increased from 50 for faster sync)
+        private const val PRIMARY_BLOGS_TABLE = "blogs"
+        private const val DEBUG_BLOGS_TABLE = "blogs_test"
+
+        internal fun resolveBlogsTable(useTestTable: Boolean): String {
+            return if (useTestTable) DEBUG_BLOGS_TABLE else PRIMARY_BLOGS_TABLE
+        }
     }
 
-    private val baseUrl: String = BuildConfig.SYNC_BASE_URL
-    private val apiKey: String = BuildConfig.SYNC_API_KEY
+    private val baseUrl: String = configuredBaseUrl
+    private val apiKey: String = configuredApiKey
+    @Volatile
+    private var activeBlogsTableName: String = resolveBlogsTable(useTestTable)
 
     private val gson: Gson = GsonBuilder()
         .setDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
@@ -131,6 +143,39 @@ class SupabaseApi @Inject constructor() {
             .build()
     }
 
+    init {
+        if (useTestTable) {
+            AppLogger.i(TAG, "DEBUG sync mode: using Supabase table '$activeBlogsTableName'")
+        }
+    }
+
+    internal fun getActiveBlogsTableName(): String = activeBlogsTableName
+
+    private fun shouldFallbackToPrimaryTable(httpCode: Int, errorBody: String): Boolean {
+        if (!useTestTable) return false
+        if (activeBlogsTableName != DEBUG_BLOGS_TABLE) return false
+        if (httpCode != 404) return false
+
+        val normalizedError = errorBody.lowercase()
+        return normalizedError.contains("pgrst205") ||
+            normalizedError.contains("could not find the table") ||
+            normalizedError.contains("schema cache")
+    }
+
+    private fun fallbackToPrimaryTable(reason: String) {
+        if (activeBlogsTableName == PRIMARY_BLOGS_TABLE) return
+
+        synchronized(this) {
+            if (activeBlogsTableName == PRIMARY_BLOGS_TABLE) return
+
+            AppLogger.w(
+                TAG,
+                "Debug table '$DEBUG_BLOGS_TABLE' unavailable ($reason). Falling back to '$PRIMARY_BLOGS_TABLE'."
+            )
+            activeBlogsTableName = PRIMARY_BLOGS_TABLE
+        }
+    }
+
     /**
      * Stream blogs from Supabase that have been updated after the given timestamp.
      * Uses keyset pagination (id > lastId) for stable performance at scale.
@@ -151,7 +196,7 @@ class SupabaseApi @Inject constructor() {
                 var hasMore = true
 
                 while (hasMore) {
-                    val url = "$baseUrl/rest/v1/blogs?select=*" +
+                    val url = "$baseUrl/rest/v1/$activeBlogsTableName?select=*" +
                             "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
                             "&is_deleted=eq.false" +
                             "&id=gt.$currentAfterId" +
@@ -174,12 +219,20 @@ class SupabaseApi @Inject constructor() {
                     // Track page count and lastId outside response block
                     var pageCount = 0
                     var lastId = currentAfterId
+                    var retryWithPrimaryTable = false
 
                     // Use response.use{} to ensure connection is closed even on cancellation
                     response.use { resp ->
                         if (!resp.isSuccessful) {
                             val errorBody = resp.body?.string() ?: "Unknown error"
                             AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+
+                            if (shouldFallbackToPrimaryTable(resp.code, errorBody)) {
+                                fallbackToPrimaryTable("${resp.code} / streamBlogsAfter")
+                                retryWithPrimaryTable = true
+                                return@use
+                            }
+
                             return@withContext Result.failure(Exception("Failed to fetch blogs: ${resp.code}"))
                         }
 
@@ -205,6 +258,10 @@ class SupabaseApi @Inject constructor() {
                                 }
                             }
                         }
+                    }
+
+                    if (retryWithPrimaryTable) {
+                        continue
                     }
 
                     AppLogger.d(TAG, "Streamed $pageCount blogs, total so far: $totalCount")
@@ -235,9 +292,16 @@ class SupabaseApi @Inject constructor() {
     suspend fun getServerCount(afterTimestamp: Long): Result<Int> {
         return withContext(Dispatchers.IO) {
             try {
-                val url = "$baseUrl/rest/v1/blogs?select=id" +
+                // Skip the or() filter when afterTimestamp=0 (hard sync) — all timestamps
+                // are >= 0, so the filter is redundant and causes statement timeout on large tables
+                val url = if (afterTimestamp > 0) {
+                    "$baseUrl/rest/v1/$activeBlogsTableName?select=id" +
                         "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
                         "&is_deleted=eq.false"
+                } else {
+                    "$baseUrl/rest/v1/$activeBlogsTableName?select=id" +
+                        "&is_deleted=eq.false"
+                }
 
                 val request = Request.Builder()
                     .url(url)
@@ -258,6 +322,12 @@ class SupabaseApi @Inject constructor() {
                     if (!resp.isSuccessful) {
                         val errorBody = resp.body?.string() ?: "Unknown error"
                         AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+
+                        if (shouldFallbackToPrimaryTable(resp.code, errorBody)) {
+                            fallbackToPrimaryTable("${resp.code} / getServerCount")
+                            return@withContext getServerCount(afterTimestamp)
+                        }
+
                         return@withContext Result.failure(Exception("Failed to get count: ${resp.code}"))
                     }
 
@@ -298,7 +368,7 @@ class SupabaseApi @Inject constructor() {
 
                 while (hasMore) {
                     // Use keyset pagination (id > afterId) instead of offset
-                    val url = "$baseUrl/rest/v1/blogs?select=*" +
+                        val url = "$baseUrl/rest/v1/$activeBlogsTableName?select=*" +
                             "&or=(created_at.gte.$afterTimestamp,updated_at.gte.$afterTimestamp)" +
                             "&is_deleted=eq.false" +
                             "&id=gt.$currentAfterId" +
@@ -321,12 +391,20 @@ class SupabaseApi @Inject constructor() {
                     // Track page count and lastId outside response block
                     var pageCount = 0
                     var lastId = currentAfterId
+                    var retryWithPrimaryTable = false
 
                     // Use response.use{} to ensure connection is closed even on cancellation
                     response.use { resp ->
                         if (!resp.isSuccessful) {
                             val errorBody = resp.body?.string() ?: "Unknown error"
                             AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+
+                            if (shouldFallbackToPrimaryTable(resp.code, errorBody)) {
+                                fallbackToPrimaryTable("${resp.code} / streamBlogsAfterId")
+                                retryWithPrimaryTable = true
+                                return@use
+                            }
+
                             return@withContext Result.failure(Exception("Failed to fetch blogs: ${resp.code}"))
                         }
 
@@ -352,6 +430,10 @@ class SupabaseApi @Inject constructor() {
                                 }
                             }
                         }
+                    }
+
+                    if (retryWithPrimaryTable) {
+                        continue
                     }
 
                     AppLogger.d(TAG, "Streamed $pageCount blogs after id, total so far: $totalCount")
@@ -387,7 +469,7 @@ class SupabaseApi @Inject constructor() {
                 var hasMore = true
 
                 while (hasMore) {
-                    val url = "$baseUrl/rest/v1/blogs?select=*" +
+                    val url = "$baseUrl/rest/v1/$activeBlogsTableName?select=*" +
                             "&is_deleted=eq.false" +
                             "&id=gt.$currentAfterId" +
                             "&order=id.asc" +
@@ -408,12 +490,20 @@ class SupabaseApi @Inject constructor() {
                     // Track page count and lastId outside response block
                     var pageCount = 0
                     var lastId = currentAfterId
+                    var retryWithPrimaryTable = false
 
                     // Use response.use{} to ensure connection is closed even on cancellation
                     response.use { resp ->
                         if (!resp.isSuccessful) {
                             val errorBody = resp.body?.string() ?: "Unknown error"
                             AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+
+                            if (shouldFallbackToPrimaryTable(resp.code, errorBody)) {
+                                fallbackToPrimaryTable("${resp.code} / streamAllBlogs")
+                                retryWithPrimaryTable = true
+                                return@use
+                            }
+
                             return@withContext Result.failure(Exception("Failed to fetch blogs: ${resp.code}"))
                         }
 
@@ -439,6 +529,10 @@ class SupabaseApi @Inject constructor() {
                                 }
                             }
                         }
+                    }
+
+                    if (retryWithPrimaryTable) {
+                        continue
                     }
 
                     AppLogger.i(TAG, "Streamed page: $pageCount blogs, total: $totalCount")
@@ -472,7 +566,7 @@ class SupabaseApi @Inject constructor() {
 
                 // Upload in batches of 100 to avoid request size limits
                 blogs.chunked(100).forEach { batch ->
-                    val url = "$baseUrl/rest/v1/blogs"
+                    val url = "$baseUrl/rest/v1/$activeBlogsTableName"
                     val json = gson.toJson(batch)
 
                     val request = Request.Builder()
@@ -492,6 +586,28 @@ class SupabaseApi @Inject constructor() {
                         if (!resp.isSuccessful) {
                             val errorBody = resp.body?.string() ?: "Unknown error"
                             AppLogger.e(TAG, "API error: ${resp.code} - $errorBody")
+
+                            if (shouldFallbackToPrimaryTable(resp.code, errorBody)) {
+                                fallbackToPrimaryTable("${resp.code} / upsertBlogs")
+                                val retryUrl = "$baseUrl/rest/v1/$activeBlogsTableName"
+                                val retryRequest = Request.Builder()
+                                    .url(retryUrl)
+                                    .addHeader("apikey", apiKey)
+                                    .addHeader("Authorization", "Bearer $apiKey")
+                                    .addHeader("Content-Type", "application/json")
+                                    .addHeader("Prefer", "resolution=merge-duplicates")
+                                    .post(json.toRequestBody(JSON_MEDIA_TYPE))
+                                    .build()
+
+                                client.newCall(retryRequest).execute().use { retryResp ->
+                                    if (!retryResp.isSuccessful) {
+                                        val retryBody = retryResp.body?.string() ?: "Unknown error"
+                                        AppLogger.e(TAG, "Retry API error: ${retryResp.code} - $retryBody")
+                                    } else {
+                                        totalUploaded += batch.size
+                                    }
+                                }
+                            }
                             // Continue with other batches even if one fails
                         } else {
                             totalUploaded += batch.size
@@ -520,7 +636,7 @@ class SupabaseApi @Inject constructor() {
         return withContext(Dispatchers.IO) {
             try {
                 val now = System.currentTimeMillis()
-                val url = "$baseUrl/rest/v1/blogs?id=eq.$blogId"
+                val url = "$baseUrl/rest/v1/$activeBlogsTableName?id=eq.$blogId"
 
                 val updateData = mapOf(
                     "is_deleted" to true,
@@ -547,6 +663,11 @@ class SupabaseApi @Inject constructor() {
                     AppLogger.d(TAG, "Soft delete response: ${resp.code} - $responseBody")
 
                     if (!resp.isSuccessful) {
+                        if (shouldFallbackToPrimaryTable(resp.code, responseBody ?: "")) {
+                            fallbackToPrimaryTable("${resp.code} / softDeleteOnServer")
+                            return@withContext softDeleteOnServer(blogId)
+                        }
+
                         AppLogger.e(TAG, "Failed to soft delete on server: ${resp.code} - $responseBody")
                         return@withContext Result.failure(Exception("Failed to soft delete: ${resp.code}"))
                     }
@@ -585,7 +706,7 @@ class SupabaseApi @Inject constructor() {
 
                 while (hasMore) {
                     // Query blogs for soft-deleted items after timestamp
-                    val url = "$baseUrl/rest/v1/blogs?select=id" +
+                        val url = "$baseUrl/rest/v1/$activeBlogsTableName?select=id" +
                             "&is_deleted=eq.true" +
                             "&updated_at=gte.$afterTimestamp" +
                             "&order=id.asc" +
@@ -603,11 +724,19 @@ class SupabaseApi @Inject constructor() {
                     AppLogger.d(TAG, "Fetching soft-deleted IDs, offset $offset")
 
                     val response = client.newCall(request).execute()
+                    var retryWithPrimaryTable = false
 
                     response.use { resp ->
                         if (!resp.isSuccessful) {
                             val errorBody = resp.body?.string() ?: "Unknown error"
                             AppLogger.e(TAG, "API error fetching deleted IDs: ${resp.code} - $errorBody")
+
+                            if (shouldFallbackToPrimaryTable(resp.code, errorBody)) {
+                                fallbackToPrimaryTable("${resp.code} / getDeletedBlogIds")
+                                retryWithPrimaryTable = true
+                                return@use
+                            }
+
                             // Don't fail sync for this, just return empty list
                             return@withContext Result.success(emptyList())
                         }
@@ -623,6 +752,10 @@ class SupabaseApi @Inject constructor() {
                         hasMore = pageIds.size == PAGE_SIZE
                         offset += PAGE_SIZE
                     }
+
+                    if (retryWithPrimaryTable) {
+                        continue
+                    }
                 }
 
                 AppLogger.i(TAG, "Found ${allIds.size} soft-deleted blog IDs from server")
@@ -632,6 +765,48 @@ class SupabaseApi @Inject constructor() {
                 AppLogger.e(TAG, "Error fetching deleted blog IDs", e)
                 // Don't fail sync for this, just return empty list
                 Result.success(emptyList())
+            }
+        }
+    }
+
+    /**
+     * Get the current server time by making a lightweight HEAD request.
+     * Parses the Date header from the response.
+     * Falls back to device time if server time is unavailable.
+     *
+     * @return Server timestamp in milliseconds, or device time as fallback
+     */
+    suspend fun getServerTime(): Long {
+        return withContext(Dispatchers.IO) {
+            try {
+                val url = "$baseUrl/rest/v1/$activeBlogsTableName?select=id&limit=0"
+                val request = Request.Builder()
+                    .url(url)
+                    .addHeader("apikey", apiKey)
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .head()
+                    .build()
+
+                val response = client.newCall(request).execute()
+                response.use { resp ->
+                    val dateHeader = resp.header("Date")
+                    if (dateHeader != null) {
+                        val serverTime = java.text.SimpleDateFormat(
+                            "EEE, dd MMM yyyy HH:mm:ss z",
+                            java.util.Locale.US
+                        ).parse(dateHeader)?.time
+
+                        if (serverTime != null) {
+                            AppLogger.d(TAG, "Server time: $serverTime (from Date header)")
+                            return@withContext serverTime
+                        }
+                    }
+                    AppLogger.w(TAG, "No Date header from server, falling back to device time")
+                    System.currentTimeMillis()
+                }
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Failed to get server time, using device time", e)
+                System.currentTimeMillis()
             }
         }
     }
