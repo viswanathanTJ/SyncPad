@@ -77,12 +77,7 @@ fun DetailScreen(
     fun copyToClipboard() {
         val state = blogState
         if (state is UiState.Success) {
-            val blog = state.data
-            val textToCopy = if (!blog.content.isNullOrBlank()) {
-                "${blog.title}\n\n${blog.content}"
-            } else {
-                blog.title
-            }
+            val textToCopy = state.data.content.orEmpty()
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText("SyncPad Note", textToCopy)
             clipboard.setPrimaryClip(clip)

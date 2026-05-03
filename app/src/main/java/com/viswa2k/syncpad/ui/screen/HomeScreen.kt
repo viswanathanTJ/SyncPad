@@ -191,13 +191,8 @@ fun HomeScreen(
     // Note: Android 13+ automatically shows a visual confirmation when copying to clipboard
     fun copyToClipboard(blogId: Long, title: String) {
         scope.launch {
-            val content = viewModel.getBlogContent(blogId)
-            val textToCopy = if (content.isNullOrBlank()) {
-                title
-            } else {
-                "$title\n\n$content"
-            }
-            
+            val textToCopy = viewModel.getBlogContent(blogId).orEmpty()
+
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText("Blog Content", textToCopy)
             clipboard.setPrimaryClip(clip)
